@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
-import { hyperliquidService, OrderParams, LeverageParams } from '../services/hyperliquidService'
+import { hyperliquidService, LeverageParams, OrderParams } from '../services/hyperliquidService'
 import { CONFIG } from '../config/config'
 
 export interface TradingState {
+  selectedCoin: string
   marginMode: 'isolated' | 'cross'
   leverage: number
   orderType: 'market' | 'limit' | 'scale' | 'twap'
@@ -42,6 +43,7 @@ export const useTrading = () => {
   })
 
   const [state, setState] = useState<TradingState>({
+    selectedCoin: CONFIG.DEFAULT_COIN,
     marginMode: CONFIG.DEFAULT_MARGIN_MODE,
     leverage: CONFIG.DEFAULT_LEVERAGE,
     orderType: 'market',
@@ -122,8 +124,8 @@ export const useTrading = () => {
       setError(null)
 
       // Format order according to Hyperliquid API specification
-      const orderParams = {
-        coin: CONFIG.DEFAULT_COIN,  // Use coin name instead of asset index
+      const orderParams: OrderParams = {
+        coin: state.selectedCoin,  // Use selected coin instead of default
         is_buy: state.side === 'buy',  // is_buy
         sz: state.size,  // size
         reduce_only: state.reduceOnly,  // reduce_only
@@ -166,7 +168,7 @@ export const useTrading = () => {
       setError(null)
 
       const leverageParams: LeverageParams = {
-        coin: CONFIG.DEFAULT_COIN,
+        coin: state.selectedCoin,
         leverageMode: state.marginMode,
         leverage
       }
@@ -199,7 +201,7 @@ export const useTrading = () => {
 
       // Update leverage with new margin mode
       const leverageParams: LeverageParams = {
-        coin: CONFIG.DEFAULT_COIN,
+        coin: state.selectedCoin,
         leverageMode: marginMode,
         leverage: state.leverage
       }

@@ -14,11 +14,25 @@ export const CONFIG = {
   // Default trading pair
   DEFAULT_COIN: "BTC-PERP",
   
+  // Available trading pairs
+  AVAILABLE_COINS: [
+    { symbol: "BTC-PERP", name: "Bitcoin", icon: "₿" },
+    { symbol: "ETH-PERP", name: "Ethereum", icon: "Ξ" },
+    { symbol: "DOGE-PERP", name: "Dogecoin", icon: "Ð" },
+    { symbol: "SOL-PERP", name: "Solana", icon: "◎" },
+    { symbol: "AVAX-PERP", name: "Avalanche", icon: "🔺" },
+    { symbol: "MATIC-PERP", name: "Polygon", icon: "⬟" },
+    { symbol: "LINK-PERP", name: "Chainlink", icon: "🔗" },
+    { symbol: "UNI-PERP", name: "Uniswap", icon: "🦄" },
+    { symbol: "AAVE-PERP", name: "Aave", icon: "👻" },
+    { symbol: "CRV-PERP", name: "Curve", icon: "🌊" }
+  ],
+  
   // Default leverage
   DEFAULT_LEVERAGE: 9,
   
   // Default margin mode
-  DEFAULT_MARGIN_MODE: "isolated" as "isolated" | "cross",
+  DEFAULT_MARGIN_MODE: "cross" as "isolated" | "cross",
   
   // API endpoints
   HYPERLIQUID_MAINNET_URL: "https://api.hyperliquid.xyz",

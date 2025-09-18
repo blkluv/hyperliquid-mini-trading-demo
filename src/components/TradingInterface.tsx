@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react'
 import { ChevronDown, TrendingUp, AlertCircle, Network } from 'lucide-react'
 import { useTrading } from '../hooks/useTrading'
+import { usePriceSubscription } from '../hooks/usePriceSubscription'
 import OrderResponsePopup, { OrderResponse } from './OrderResponsePopup'
+import { CONFIG } from '../config/config'
 
 const TradingInterface: React.FC = () => {
   const {
@@ -21,13 +23,39 @@ const TradingInterface: React.FC = () => {
   const [currentNetwork, setCurrentNetwork] = useState<'testnet' | 'mainnet' | 'unknown'>('unknown')
   const [orderResponse, setOrderResponse] = useState<OrderResponse | null>(null)
   const [showOrderPopup, setShowOrderPopup] = useState(false)
+  
+  // Price subscription for selected coin
+  const { price: currentPrice, prices: priceMap, isConnected: priceConnected, error: priceError } = usePriceSubscription(
+    state.selectedCoin, 
+    currentNetwork === 'testnet'
+  )
 
+  const formatPairLabel = (symbol: string) => {
+    if (!symbol) return 'N/A'
+    if (symbol.includes('-PERP')) {
+      return symbol.replace('-PERP', '/USDC')
+    }
+    if (symbol.includes('-USD')) {
+      return symbol.replace('-USD', '/USD')
+    }
+    return symbol
+  }
+
+  const selectedCoinKey = state.selectedCoin?.toUpperCase() || ''
+  const topCardPrice = selectedCoinKey && priceMap && priceMap[selectedCoinKey] !== undefined
+    ? priceMap[selectedCoinKey]
+    : currentPrice
+  
   const handleSizeChange = (value: string) => {
     setState(prev => ({ ...prev, size: value }))
   }
 
   const handleSizePercentageChange = (percentage: number) => {
     setState(prev => ({ ...prev, sizePercentage: percentage }))
+  }
+
+  const handleCoinChange = (coin: string) => {
+    setState(prev => ({ ...prev, selectedCoin: coin }))
   }
 
   const handleSubmitOrder = async () => {
@@ -184,36 +212,104 @@ const TradingInterface: React.FC = () => {
             </button>
           </div>
         </div>
+        <div className="mt-4 p-3 bg-gray-900/60 rounded-lg flex justify-between items-center border border-gray-700">
+          <span className="text-gray-400 text-sm">
+            {formatPairLabel(state.selectedCoin)} Price:
+          </span>
+          <span className="text-green-400 font-bold text-lg">
+            {priceError ? (
+              <span className="text-red-400 text-sm">{priceError}</span>
+            ) : typeof topCardPrice === 'number' ? (
+              `$${topCardPrice.toLocaleString(undefined, { minimumFractionDigits: 5, maximumFractionDigits: 5 })}`
+            ) : priceConnected ? (
+              <span className="text-gray-400 text-sm">Loading...</span>
+            ) : (
+              <span className="text-gray-400 text-sm">Connecting...</span>
+            )}
+          </span>
+        </div>
+      </div>
+
+      {/* Coin Selection and Price Display */}
+      <div className="mb-4">
+        <div className="relative">
+          <select
+            value={state.selectedCoin}
+            onChange={(e) => handleCoinChange(e.target.value)}
+            disabled={isLoading}
+            className="w-full p-4 bg-gray-800 rounded-lg border border-gray-600 focus:border-teal-primary focus:outline-none appearance-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {CONFIG.AVAILABLE_COINS.map((coin: { symbol: string; name: string; icon: string }) => (
+              <option key={coin.symbol} value={coin.symbol}>
+                 {coin.name} ({coin.symbol})
+              </option>
+            ))}
+          </select>
+          
+          {/* Custom display overlay */}
+          <div className="absolute inset-0 flex items-center justify-between px-4 pointer-events-none">
+            {/* Left side - Coin name */}
+            <div className="flex items-center gap-3">
+              {(() => {
+                const selectedCoinData = CONFIG.AVAILABLE_COINS.find(coin => coin.symbol === state.selectedCoin)
+                return (
+                  <>
+                    <span className="text-2xl">{selectedCoinData?.icon}</span>
+                    <span className="text-lg font-medium text-white">{selectedCoinData?.name}</span>
+                  </>
+                )
+              })()}
+            </div>
+            
+            {/* Right side - Price */}
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-400">Price:</span>
+              <span className="text-lg font-semibold text-white">
+                {priceError ? (
+                  <span className="text-red-400">{priceError}</span>
+                ) : currentPrice ? (
+                  `$${currentPrice.toLocaleString()}`
+                ) : priceConnected ? (
+                  <span className="text-gray-400">Loading...</span>
+                ) : (
+                  <span className="text-gray-400">Connecting...</span>
+                )}
+              </span>
+              <ChevronDown size={20} className="text-gray-400" />
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Top Configuration Bar */}
       <div className="flex gap-2 mb-4">
-        <button
-          className={`px-3 py-1 rounded text-sm font-medium ${
-            state.marginMode === 'isolated'
-              ? 'bg-dark-border text-white'
-              : 'bg-transparent text-gray-400 hover:text-white'
-          }`}
-          onClick={() => handleMarginModeChange('isolated')}
-          disabled={isLoading}
-        >
-          Isolated
-        </button>
-        <div className="flex gap-1">
-          {[1, 3, 5, 9].map((leverage) => (
-            <button
-              key={leverage}
-              className={`px-2 py-1 rounded text-sm font-medium ${
-                state.leverage === leverage
-                  ? 'bg-dark-border text-white'
-                  : 'bg-transparent text-gray-400 hover:text-white'
-              }`}
-              onClick={() => handleLeverageChange(leverage)}
-              disabled={isLoading}
-            >
-              {leverage}x
-            </button>
-          ))}
+        {/* Margin Mode Dropdown */}
+        <div className="relative">
+          <select
+            value={state.marginMode}
+            onChange={(e) => handleMarginModeChange(e.target.value as 'isolated' | 'cross')}
+            disabled={isLoading}
+            className="px-3 py-1 rounded text-sm font-medium bg-dark-border text-white border border-gray-600 focus:border-teal-primary focus:outline-none appearance-none pr-8 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <option value="cross">Cross</option>
+            <option value="isolated">Isolated</option>
+          </select>
+          <ChevronDown size={16} className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 pointer-events-none" />
+        </div>
+        {/* Leverage Dropdown */}
+        <div className="relative">
+          <select
+            value={state.leverage}
+            onChange={(e) => handleLeverageChange(parseInt(e.target.value))}
+            disabled={isLoading}
+            className="px-3 py-1 rounded text-sm font-medium bg-dark-border text-white border border-gray-600 focus:border-teal-primary focus:outline-none appearance-none pr-8 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <option value={1}>1x</option>
+            <option value={3}>3x</option>
+            <option value={5}>5x</option>
+            <option value={9}>9x</option>
+          </select>
+          <ChevronDown size={16} className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 pointer-events-none" />
         </div>
         <button
           className="px-3 py-1 rounded text-sm font-medium bg-dark-border text-white"
@@ -225,9 +321,9 @@ const TradingInterface: React.FC = () => {
       {/* Order Type Tabs */}
       <div className="flex gap-2 mb-6">
         <button
-          className={`px-4 py-2 rounded text-sm font-medium ${
+          className={`flex-1 px-4 py-2 rounded text-sm font-medium ${
             state.orderType === 'market'
-              ? 'bg-white text-black'
+              ? 'bg-white text-black underline'
               : 'bg-transparent text-gray-400 hover:text-white'
           }`}
           onClick={() => setState(prev => ({ ...prev, orderType: 'market' }))}
@@ -235,40 +331,34 @@ const TradingInterface: React.FC = () => {
           Market
         </button>
         <button
-          className={`px-4 py-2 rounded text-sm font-medium ${
+          className={`flex-1 px-4 py-2 rounded text-sm font-medium ${
             state.orderType === 'limit'
-              ? 'bg-white text-black'
+              ? 'bg-white text-black underline'
               : 'bg-transparent text-gray-400 hover:text-white'
           }`}
           onClick={() => setState(prev => ({ ...prev, orderType: 'limit' }))}
         >
           Limit
         </button>
-        <button
-          className={`px-4 py-2 rounded text-sm font-medium ${
-            state.orderType === 'scale'
-              ? 'bg-white text-black'
-              : 'bg-transparent text-gray-400 hover:text-white'
-          }`}
-          onClick={() => setState(prev => ({ ...prev, orderType: 'scale' }))}
-        >
-          Scale
-        </button>
-        <button
-          className={`px-4 py-2 rounded text-sm font-medium ${
-            state.orderType === 'twap'
-              ? 'bg-white text-black'
-              : 'bg-transparent text-gray-400 hover:text-white'
-          }`}
-          onClick={() => setState(prev => ({ ...prev, orderType: 'twap' }))}
-        >
-          TWAP
-        </button>
-        <div className="ml-auto">
-          <button className="px-3 py-2 rounded text-sm font-medium bg-transparent text-gray-400 hover:text-white flex items-center gap-1">
-            Pro
-            <ChevronDown size={16} />
-          </button>
+        <div className="flex-1">
+          <div className="relative">
+            <select
+              value={state.orderType === 'scale' || state.orderType === 'twap' ? state.orderType : ''}
+              onChange={(e) => {
+                setState(prev => ({ ...prev, orderType: e.target.value as any }))
+              }}
+              className={`w-full px-3 py-2 rounded text-sm font-medium border focus:border-teal-primary focus:outline-none appearance-none pr-8 cursor-pointer ${
+                state.orderType === 'scale' || state.orderType === 'twap'
+                  ? 'bg-white text-black underline'
+                  : 'bg-transparent text-gray-400 hover:text-white border-gray-600'
+              }`}
+            >
+              <option value="" disabled>Pro</option>
+              <option value="scale">Scale</option>
+              <option value="twap">TWAP</option>
+            </select>
+            <ChevronDown size={12} className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 pointer-events-none" />
+          </div>
         </div>
       </div>
 

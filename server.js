@@ -23,6 +23,117 @@ const CONFIG = {
 // Initialize Hyperliquid SDK
 let sdk = null
 
+// Realtime price streaming state
+let latestPrices = {}
+const priceStreamClients = new Set()
+let pricePollInterval = null
+let isFetchingPrices = false
+
+const getNetworkName = () => (CONFIG.USE_TESTNET ? 'testnet' : 'mainnet')
+
+const broadcastPrices = (prices = latestPrices) => {
+  console.log('📡 broadcastPrices called with:', prices)
+  console.log('📡 Connected SSE clients:', priceStreamClients.size)
+  
+  if (!prices || Object.keys(prices).length === 0) {
+    console.log('⚠️ No prices to broadcast')
+    return
+  }
+
+  const payload = {
+    type: 'priceUpdate',
+    prices,
+    network: getNetworkName(),
+    timestamp: Date.now()
+  }
+
+  console.log('📡 Broadcasting price update to', priceStreamClients.size, 'clients')
+  console.log('📡 Price update payload:', JSON.stringify(payload, null, 2))
+
+  const data = `data: ${JSON.stringify(payload)}\n\n`
+
+  for (const client of priceStreamClients) {
+    try {
+      client.write(data)
+      console.log('✅ Price update sent to SSE client')
+    } catch (error) {
+      console.error('❌ Failed to write to SSE client:', error.message)
+      priceStreamClients.delete(client)
+      try {
+        client.end()
+      } catch (endError) {
+        console.error('❌ Failed to close SSE client connection:', endError.message)
+      }
+    }
+  }
+}
+
+const stopPriceFeed = () => {
+  if (pricePollInterval) {
+    clearInterval(pricePollInterval)
+    pricePollInterval = null
+  }
+}
+
+const fetchAndBroadcastPrices = async () => {
+  console.log('🔄 fetchAndBroadcastPrices called')
+  
+  if (!sdk || isFetchingPrices) {
+    console.log('⚠️ Skipping price fetch - SDK not available or already fetching')
+    return
+  }
+
+  console.log('🔄 Starting price fetch...')
+  isFetchingPrices = true
+
+  try {
+    console.log('🔄 Calling sdk.info.getAllMids()...')
+    console.log('🔄 SDK object:', sdk)
+    console.log('🔄 SDK.info:', sdk.info)
+    console.log('🔄 SDK.info.general:', sdk.info?.general)
+    
+    const snapshot = await sdk.info.getAllMids()
+    console.log('✅ Received price snapshot:', snapshot)
+    
+    if (snapshot && typeof snapshot === 'object') {
+      latestPrices = snapshot
+      console.log('✅ Updated latestPrices, broadcasting...')
+      broadcastPrices()
+    } else {
+      console.log('⚠️ Invalid snapshot received:', snapshot)
+    }
+  } catch (error) {
+    console.error('❌ Failed to fetch price snapshot:', error.message)
+    console.error('❌ Error details:', error)
+  } finally {
+    isFetchingPrices = false
+    console.log('🔄 Price fetch completed')
+  }
+}
+
+const ensurePriceFeed = async () => {
+  console.log('🔄 ensurePriceFeed called')
+  
+  if (!sdk) {
+    console.error('❌ SDK not initialized in ensurePriceFeed')
+    throw new Error('SDK not initialized')
+  }
+
+  console.log('✅ SDK is available, checking pricePollInterval')
+  
+  if (pricePollInterval) {
+    console.log('✅ Price feed already running, skipping initialization')
+    return
+  }
+
+  console.log('🔄 Starting price feed initialization...')
+  await fetchAndBroadcastPrices()
+
+  console.log('🔄 Setting up price polling interval (1 second)')
+  pricePollInterval = setInterval(fetchAndBroadcastPrices, 1000)
+  console.log('✅ Price feed initialized successfully')
+}
+
 async function initializeSDK() {
   try {
     sdk = new Hyperliquid({
@@ -32,6 +143,8 @@ async function initializeSDK() {
     })
     
     await sdk.connect()
+
+    await ensurePriceFeed()
     console.log('✅ Hyperliquid SDK initialized successfully')
     console.log('🌐 Network:', CONFIG.USE_TESTNET ? 'Testnet' : 'Mainnet')
   } catch (error) {
@@ -62,6 +175,117 @@ app.get('/api/meta', async (req, res) => {
     res.json(meta)
   } catch (error) {
     res.status(500).json({ error: error.message })
+  }
+})
+
+// Get current mid prices snapshot
+app.get('/api/prices', async (req, res) => {
+  try {
+    if (!sdk) {
+      return res.status(503).json({ error: 'SDK not initialized' })
+    }
+
+    await ensurePriceFeed()
+
+    res.json({
+      prices: latestPrices,
+      network: getNetworkName(),
+      timestamp: Date.now()
+    })
+  } catch (error) {
+    console.error('❌ Failed to fetch prices:', error.message)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Server-Sent Events stream for realtime prices
+app.get('/api/price-stream', async (req, res) => {
+  console.log('🔌 New SSE client connecting to /api/price-stream')
+  
+  if (!sdk) {
+    console.error('❌ SDK not initialized for SSE client')
+    res.status(503).json({ error: 'SDK not initialized' })
+    return
+  }
+
+  console.log('✅ SDK is initialized, setting up SSE headers')
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders()
+  }
+
+  priceStreamClients.add(res)
+  console.log(`📊 Total SSE clients connected: ${priceStreamClients.size}`)
+
+  const keepAlive = setInterval(() => {
+    res.write(': keep-alive\n\n')
+  }, 30000)
+
+  req.on('close', () => {
+    console.log('🔌 SSE client disconnected')
+    clearInterval(keepAlive)
+    priceStreamClients.delete(res)
+    console.log(`📊 Remaining SSE clients: ${priceStreamClients.size}`)
+    try {
+      res.end()
+    } catch (error) {
+      console.error('❌ Failed to terminate SSE connection:', error.message)
+    }
+  })
+
+  // Send initial connection confirmation
+  res.write(
+    `data: ${JSON.stringify({
+      type: 'connection',
+      message: 'Connected to price stream',
+      timestamp: Date.now()
+    })}\n\n`
+  )
+
+  try {
+    console.log('🔄 Attempting to initialize price feed for SSE client...')
+    await ensurePriceFeed()
+    console.log('✅ Price feed initialization completed for SSE client')
+  } catch (error) {
+    console.error('❌ Failed to initialize price feed for SSE client:', error.message)
+    console.error('❌ Error details:', error)
+    res.write(
+      `data: ${JSON.stringify({
+        type: 'error',
+        message: 'Failed to initialize price feed',
+        error: error.message,
+        timestamp: Date.now()
+      })}\n\n`
+    )
+  }
+
+  // Send current prices if available
+  console.log('📊 Checking for existing prices...')
+  console.log('📊 latestPrices:', latestPrices)
+  console.log('📊 latestPrices keys:', Object.keys(latestPrices || {}))
+  
+  if (latestPrices && Object.keys(latestPrices).length > 0) {
+    console.log('✅ Sending initial price snapshot to SSE client')
+    res.write(
+      `data: ${JSON.stringify({
+        type: 'snapshot',
+        prices: latestPrices,
+        network: getNetworkName(),
+        timestamp: Date.now()
+      })}\n\n`
+    )
+  } else {
+    console.log('⚠️ No prices available to send to SSE client')
+    res.write(
+      `data: ${JSON.stringify({
+        type: 'no_data',
+        message: 'No price data available',
+        timestamp: Date.now()
+      })}\n\n`
+    )
   }
 })
 
@@ -117,7 +341,7 @@ app.post('/api/place-order', async (req, res) => {
     const order = req.body
     console.log('📝 Placing order:', JSON.stringify(order, null, 2))
     
-    // Get current market price for better order execution
+    // Get current market price for better order executionmm0
     try {
       const meta = await sdk.info.perpetuals.getMeta()
       const btcAsset = meta.universe.find(asset => asset.name === 'BTC-PERP')
@@ -155,13 +379,65 @@ app.post('/api/place-order', async (req, res) => {
 app.post('/api/update-leverage', async (req, res) => {
   try {
     if (!sdk) {
+      console.log('❌ Update leverage failed: SDK not initialized')
       return res.status(500).json({ error: 'SDK not initialized' })
     }
     
     const { coin, leverageMode, leverage } = req.body
+    console.log('📊 Updating leverage:', {
+      coin: coin || 'N/A',
+      leverageMode: leverageMode || 'N/A',
+      leverage: leverage || 'N/A',
+      timestamp: new Date().toISOString()
+    })
+    
+    // Validate required parameters
+    if (!coin) {
+      console.log('❌ Update leverage failed: Missing coin parameter')
+      return res.status(400).json({ error: 'Missing coin parameter' })
+    }
+    
+    if (!leverageMode) {
+      console.log('❌ Update leverage failed: Missing leverageMode parameter')
+      return res.status(400).json({ error: 'Missing leverageMode parameter' })
+    }
+    
+    if (!leverage) {
+      console.log('❌ Update leverage failed: Missing leverage parameter')
+      return res.status(400).json({ error: 'Missing leverage parameter' })
+    }
+    
+    // Validate leverage mode
+    if (!['cross', 'isolated'].includes(leverageMode)) {
+      console.log('❌ Update leverage failed: Invalid leverageMode:', leverageMode)
+      return res.status(400).json({ error: 'Invalid leverageMode. Must be "cross" or "isolated"' })
+    }
+    
+    // Validate leverage value
+    const leverageNum = parseFloat(leverage)
+    if (isNaN(leverageNum) || leverageNum <= 0) {
+      console.log('❌ Update leverage failed: Invalid leverage value:', leverage)
+      return res.status(400).json({ error: 'Invalid leverage value. Must be a positive number' })
+    }
+    
+    console.log('✅ Calling SDK updateLeverage with validated parameters')
     const result = await sdk.exchange.updateLeverage(coin, leverageMode, leverage)
+    
+    console.log('✅ Leverage update successful:', {
+      coin,
+      leverageMode,
+      leverage,
+      result: result?.status || 'success',
+      timestamp: new Date().toISOString()
+    })
+    
     res.json(result)
   } catch (error) {
+    console.error('❌ Update leverage failed:', {
+      error: error.message,
+      stack: error.stack,
+      timestamp: new Date().toISOString()
+    })
     res.status(500).json({ error: error.message })
   }
 })
@@ -351,9 +627,10 @@ app.post('/api/switch-network', async (req, res) => {
     
     // Update config
     CONFIG.USE_TESTNET = network === 'testnet'
-    
+
     // Reinitialize SDK with new network
     if (sdk) {
+      stopPriceFeed()
       try {
         // Try to disconnect if method exists
         if (typeof sdk.disconnect === 'function') {
@@ -363,15 +640,18 @@ app.post('/api/switch-network', async (req, res) => {
         console.log('Disconnect not available or failed:', error.message)
       }
     }
-    
+
+    latestPrices = {}
+
     sdk = new Hyperliquid({
       privateKey: CONFIG.PRIVATE_KEY,
       testnet: CONFIG.USE_TESTNET,
       enableWs: true
     })
-    
+
     await sdk.connect()
-    
+    await ensurePriceFeed()
+
     console.log(`🔄 Switched to ${network}`)
     res.json({ 
       success: true, 
