@@ -9,11 +9,13 @@ export interface TradingState {
   orderType: 'market' | 'limit' | 'scale' | 'twap'
   side: 'buy' | 'sell'
   size: string
-  sizeUnit: 'USD' | 'BTC'
+  sizeUnit: 'USD' | string
   sizePercentage: number
   reduceOnly: boolean
   takeProfitStopLoss: boolean
   limitPrice: string
+  limitPriceManuallySet: boolean
+  timeInForce: 'GTC' | 'IOC' | 'ALO'
   stopLossPrice: string
   takeProfitPrice: string
   takeProfitGain: string
@@ -69,6 +71,8 @@ export const useTrading = () => {
     reduceOnly: false,
     takeProfitStopLoss: false,
     limitPrice: '',
+    limitPriceManuallySet: false,
+    timeInForce: 'GTC',
     stopLossPrice: '',
     takeProfitPrice: '',
     takeProfitGain: '10',
@@ -137,15 +141,95 @@ export const useTrading = () => {
     }
   }, [])
 
+  // Validation functions
+  const validateOrder = useCallback(() => {
+    const errors: string[] = []
+
+    // Basic validation
+    if (!state.size || parseFloat(state.size) <= 0) {
+      errors.push('Order size must be greater than 0')
+    }
+
+    if (parseFloat(state.size) < 0.001) {
+      errors.push('Minimum order size is 0.001')
+    }
+
+    // Order type specific validation
+    switch (state.orderType) {
+      case 'limit':
+        if (!state.limitPrice || parseFloat(state.limitPrice) <= 0) {
+          errors.push('Limit price must be greater than 0')
+        }
+        break
+
+      case 'scale':
+        if (!state.scaleStartPrice || parseFloat(state.scaleStartPrice) <= 0) {
+          errors.push('Scale start price must be greater than 0')
+        }
+        if (!state.scaleEndPrice || parseFloat(state.scaleEndPrice) <= 0) {
+          errors.push('Scale end price must be greater than 0')
+        }
+        if (!state.scaleOrderCount || parseInt(state.scaleOrderCount) <= 0) {
+          errors.push('Scale order count must be greater than 0')
+        }
+        if (parseInt(state.scaleOrderCount) > 20) {
+          errors.push('Maximum 20 scale orders allowed')
+        }
+        if (parseFloat(state.scaleStartPrice) <= parseFloat(state.scaleEndPrice)) {
+          errors.push('Start price must be higher than end price')
+        }
+        break
+
+      case 'twap':
+        if (!state.twapRunningTimeHours || !state.twapRunningTimeMinutes) {
+          errors.push('TWAP running time is required')
+        }
+        const totalMinutes = (parseInt(state.twapRunningTimeHours) * 60) + parseInt(state.twapRunningTimeMinutes)
+        if (totalMinutes < 5) {
+          errors.push('Minimum TWAP running time is 5 minutes')
+        }
+        if (totalMinutes > 1440) {
+          errors.push('Maximum TWAP running time is 24 hours')
+        }
+        if (!state.twapNumberOfIntervals || parseInt(state.twapNumberOfIntervals) <= 0) {
+          errors.push('Number of intervals must be greater than 0')
+        }
+        if (parseInt(state.twapNumberOfIntervals) > 100) {
+          errors.push('Maximum 100 intervals allowed')
+        }
+        break
+    }
+
+    // Take Profit / Stop Loss validation
+    if (state.takeProfitStopLoss) {
+      if (state.takeProfitPrice && parseFloat(state.takeProfitPrice) <= 0) {
+        errors.push('Take profit price must be greater than 0')
+      }
+      if (state.stopLossPrice && parseFloat(state.stopLossPrice) <= 0) {
+        errors.push('Stop loss price must be greater than 0')
+      }
+      if (state.takeProfitGain && (parseFloat(state.takeProfitGain) <= 0 || parseFloat(state.takeProfitGain) > 1000)) {
+        errors.push('Take profit gain must be between 0.01% and 1000%')
+      }
+      if (state.stopLossLoss && (parseFloat(state.stopLossLoss) <= 0 || parseFloat(state.stopLossLoss) > 100)) {
+        errors.push('Stop loss must be between 0.01% and 100%')
+      }
+    }
+
+    return errors
+  }, [state])
+
   // Place order
-  const placeOrder = useCallback(async () => {
+  const placeOrder = useCallback(async (convertedSize?: string, currentPrice?: number) => {
     if (!hyperliquidService.isReady()) {
       setError('SDK not initialized')
       return
     }
 
-    if (!state.size || parseFloat(state.size) <= 0) {
-      setError('Please enter a valid order size')
+    // Validate order parameters
+    const validationErrors = validateOrder()
+    if (validationErrors.length > 0) {
+      setError(validationErrors.join(', '))
       return
     }
 
@@ -155,28 +239,42 @@ export const useTrading = () => {
 
       // Handle scale orders differently
       if (state.orderType === 'scale') {
-        return await placeScaleOrder()
+        return await placeScaleOrder(convertedSize, currentPrice)
       }
 
       // Handle TWAP orders differently
       if (state.orderType === 'twap') {
-        return await placeTwapOrder()
+        return await placeTwapOrder(convertedSize, currentPrice)
       }
 
       // Format order according to Hyperliquid API specification
       const orderParams: OrderParams = {
         coin: state.selectedCoin,  // Use selected coin instead of default
         is_buy: state.side === 'buy',  // is_buy
-        sz: state.size,  // size
+        sz: convertedSize || state.size,  // Use converted size if provided, otherwise use original size
         reduce_only: state.reduceOnly,  // reduce_only
-        order_type: getOrderType(state.orderType)  // order_type
+        order_type: getOrderType(state.orderType, state.timeInForce)  // order_type
       }
 
-      // Add price only for limit orders
+      // Add price for both limit and market orders
       if (state.orderType === 'limit' && state.limitPrice) {
-        orderParams.limit_px = state.limitPrice
+        const limitPrice = parseFloat(state.limitPrice)
+        orderParams.limit_px = formatPriceForTickSize(limitPrice, state.selectedCoin)
+      } else if (state.orderType === 'market' && currentPrice) {
+        // For market orders, use current market price with a small buffer to ensure execution
+        // Add 1% buffer to ensure the order executes immediately
+        const buffer = state.side === 'buy' ? 1.01 : 0.99 // 1% above for buy, 1% below for sell
+        const marketPrice = formatPriceForTickSize(currentPrice * buffer, state.selectedCoin)
+        orderParams.limit_px = marketPrice
+        
+        console.log('🎣 Hook: Market order price calculation:', {
+          currentPrice,
+          side: state.side,
+          buffer,
+          marketPrice,
+          orderParams
+        })
       }
-      // For market orders, let the server determine the appropriate price
 
       // Note: Take Profit/Stop Loss orders would need to be placed separately
       // as they are different order types in Hyperliquid
@@ -197,11 +295,14 @@ export const useTrading = () => {
   }, [state, loadAccountData])
 
   // Place scale order (multiple orders)
-  const placeScaleOrder = useCallback(async () => {
+  const placeScaleOrder = useCallback(async (convertedSize?: string, currentPrice?: number) => {
     const startPrice = parseFloat(state.scaleStartPrice)
     const endPrice = parseFloat(state.scaleEndPrice)
     const orderCount = parseInt(state.scaleOrderCount)
-    const totalSize = parseFloat(state.size)
+    const totalSize = parseFloat(convertedSize || state.size)
+    
+    // Use currentPrice for validation if needed
+    console.log('🎣 Hook: Scale order with current price:', currentPrice)
 
     // Validate scale order parameters
     if (isNaN(startPrice) || isNaN(endPrice) || isNaN(orderCount) || orderCount <= 0) {
@@ -218,7 +319,8 @@ export const useTrading = () => {
     const priceStep = (startPrice - endPrice) / (orderCount - 1)
 
     for (let i = 0; i < orderCount; i++) {
-      const price = (startPrice - (priceStep * i)).toFixed(2)
+      const rawPrice = startPrice - (priceStep * i)
+      const price = formatPriceForTickSize(rawPrice, state.selectedCoin)
       let size = totalSize / orderCount // Equal distribution
       
       if (state.scaleSizeDistribution === 'linear') {
@@ -232,7 +334,7 @@ export const useTrading = () => {
         is_buy: state.side === 'buy',
         sz: size.toFixed(4),
         reduce_only: state.reduceOnly,
-        order_type: getOrderType('limit'), // Scale orders are limit orders
+        order_type: getOrderType('limit', 'GTC'), // Scale orders are limit orders with GTC
         limit_px: price
       }
 
@@ -258,12 +360,15 @@ export const useTrading = () => {
   }, [state, loadAccountData])
 
   // Place TWAP order (scheduled orders)
-  const placeTwapOrder = useCallback(async () => {
+  const placeTwapOrder = useCallback(async (convertedSize?: string, currentPrice?: number) => {
     const runningTimeHours = parseInt(state.twapRunningTimeHours)
     const runningTimeMinutes = parseInt(state.twapRunningTimeMinutes)
     const numberOfIntervals = parseInt(state.twapNumberOfIntervals)
-    const totalSize = parseFloat(state.size)
+    const totalSize = parseFloat(convertedSize || state.size)
     const priceOffset = parseFloat(state.twapPriceOffset)
+    
+    // Use currentPrice for validation if needed
+    console.log('🎣 Hook: TWAP order with current price:', currentPrice)
 
     // Calculate total running time in minutes
     const totalRunningTimeMinutes = (runningTimeHours * 60) + runningTimeMinutes
@@ -296,14 +401,17 @@ export const useTrading = () => {
         is_buy: state.side === 'buy',
         sz: subOrderSize.toFixed(4),
         reduce_only: state.reduceOnly,
-        order_type: state.twapOrderType === 'market' ? getOrderType('market') : getOrderType('limit')
+        order_type: state.twapOrderType === 'market' ? getOrderType('market') : getOrderType('limit', 'GTC')
       }
 
       // Add price offset for limit orders
-      if (state.twapOrderType === 'limit') {
-        // This would need current market price to calculate offset
-        // For now, we'll use a placeholder
-        firstOrderParams.limit_px = '100000' // Placeholder - would need real market price
+      if (state.twapOrderType === 'limit' && currentPrice) {
+        // Calculate price with offset for limit orders
+        const priceOffset = parseFloat(state.twapPriceOffset) || 0
+        const offsetPrice = state.side === 'buy' 
+          ? currentPrice - priceOffset 
+          : currentPrice + priceOffset
+        firstOrderParams.limit_px = formatPriceForTickSize(offsetPrice, state.selectedCoin)
       }
 
       const firstResult = await hyperliquidService.placeOrder(firstOrderParams)
@@ -338,12 +446,16 @@ export const useTrading = () => {
               is_buy: state.side === 'buy',
               sz: subOrderSize.toFixed(4),
               reduce_only: state.reduceOnly,
-              order_type: state.twapOrderType === 'market' ? getOrderType('market') : getOrderType('limit')
+              order_type: state.twapOrderType === 'market' ? getOrderType('market') : getOrderType('limit', 'GTC')
             }
 
             // Add price offset for limit orders
-            if (state.twapOrderType === 'limit') {
-              orderParams.limit_px = '100000' // Placeholder - would need real market price
+            if (state.twapOrderType === 'limit' && currentPrice) {
+              const priceOffset = parseFloat(state.twapPriceOffset) || 0
+              const offsetPrice = state.side === 'buy' 
+                ? currentPrice - priceOffset 
+                : currentPrice + priceOffset
+              orderParams.limit_px = formatPriceForTickSize(offsetPrice, state.selectedCoin)
             }
 
             await hyperliquidService.placeOrder(orderParams)
@@ -459,17 +571,47 @@ export const useTrading = () => {
     }
   }, [loadAccountData])
 
+  // Helper function to format price according to tick size requirements
+  const formatPriceForTickSize = (price: number, coin: string): string => {
+    // Extract base coin from coin pair (e.g., "BTC-PERP" -> "BTC")
+    const baseCoin = coin.toUpperCase().split('-')[0]
+    
+    // Define tick sizes for different assets
+    const tickSizes: { [key: string]: number } = {
+      'BTC': 0.5,      // BTC tick size is typically 0.5
+      'ETH': 0.05,     // ETH tick size is typically 0.05
+      'SOL': 0.01,     // SOL tick size is typically 0.01
+      'DOGE': 0.0001,  // DOGE tick size is typically 0.0001
+      'default': 0.01  // Default tick size
+    }
+    
+    const tickSize = tickSizes[baseCoin] || tickSizes.default
+    
+    // Round price to nearest tick size
+    const roundedPrice = Math.round(price / tickSize) * tickSize
+    
+    // Format with appropriate decimal places
+    const decimalPlaces = tickSize < 1 ? Math.abs(Math.log10(tickSize)) : 0
+    return roundedPrice.toFixed(decimalPlaces)
+  }
+
   // Helper function to get order type
-  const getOrderType = (orderType: string) => {
+  const getOrderType = (orderType: string, timeInForce?: string) => {
     switch (orderType) {
       case 'market':
         return { limit: { tif: 'Ioc' as const } } // Market order using IOC limit
       case 'limit':
-        return { limit: { tif: 'Gtc' as const } }
+        // Use selected TIF for limit orders
+        const tifMap: { [key: string]: 'Gtc' | 'Ioc' | 'Alo' } = {
+          'GTC': 'Gtc',
+          'IOC': 'Ioc', 
+          'ALO': 'Alo'
+        }
+        return { limit: { tif: tifMap[timeInForce || 'GTC'] || 'Gtc' } }
       case 'scale':
-        return { limit: { tif: 'Gtc' as const } } // Simplified for now
+        return { limit: { tif: 'Gtc' as const } } // Scale orders use GTC
       case 'twap':
-        return { limit: { tif: 'Gtc' as const } } // Simplified for now
+        return { limit: { tif: 'Gtc' as const } } // TWAP orders use GTC
       default:
         return { limit: { tif: 'Ioc' as const } }
     }
@@ -564,6 +706,7 @@ export const useTrading = () => {
     loadAccountData,
     switchNetwork,
     getNetworkStatus,
-    getPositionForCoin
+    getPositionForCoin,
+    formatPriceForTickSize
   }
 }

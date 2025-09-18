@@ -1,12 +1,14 @@
 // Use API approach for better security and compatibility
-import { hyperliquidAPI } from '../api/hyperliquidApi'
+import { hyperliquidAPI, OrderRequest } from '../api/hyperliquidApi'
 
 export interface OrderParams {
   coin: string
   is_buy: boolean
   sz: string | number
   limit_px?: string | number
-  order_type: OrderType
+  order_type: {
+    limit?: { tif: 'Gtc' | 'Ioc' | 'Alo' }
+  }
   reduce_only: boolean
   cloid?: string
 }
@@ -48,7 +50,18 @@ class HyperliquidService {
     }
 
     try {
-      const result = await hyperliquidAPI.placeOrder(orderParams)
+      // Convert OrderParams to OrderRequest format
+      const orderRequest: OrderRequest = {
+        coin: orderParams.coin,
+        is_buy: orderParams.is_buy,
+        sz: orderParams.sz,
+        limit_px: orderParams.limit_px,
+        order_type: orderParams.order_type,
+        reduce_only: orderParams.reduce_only,
+        cloid: orderParams.cloid
+      }
+      
+      const result = await hyperliquidAPI.placeOrder(orderRequest)
       return result
     } catch (error) {
       console.error('Failed to place order:', error)

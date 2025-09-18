@@ -18,13 +18,91 @@ const TradingInterface: React.FC = () => {
     updateMarginMode,
     switchNetwork,
     getNetworkStatus,
-    getPositionForCoin
+    getPositionForCoin,
+    formatPriceForTickSize
   } = useTrading()
 
   const [currentNetwork, setCurrentNetwork] = useState<'testnet' | 'mainnet' | 'unknown'>('unknown')
   const [orderResponse, setOrderResponse] = useState<OrderResponse | null>(null)
   const [showOrderPopup, setShowOrderPopup] = useState(false)
   const [currentPosition, setCurrentPosition] = useState<string>('0.00000 BTC')
+  const [validationErrors, setValidationErrors] = useState<string[]>([])
+  const [touchedFields, setTouchedFields] = useState<Set<string>>(new Set())
+  const [showConfirmPopup, setShowConfirmPopup] = useState(false)
+  const [pendingOrder, setPendingOrder] = useState<any>(null)
+  
+  // Helper function to mark field as touched
+  const markFieldAsTouched = (fieldName: string) => {
+    setTouchedFields(prev => new Set(prev).add(fieldName))
+  }
+
+  // Helper function to convert USD to coin size with coin-specific rounding
+  const convertUsdToCoinSize = (usdAmount: number, coinPrice: number, coin: string): number => {
+    const rawSize = usdAmount / coinPrice
+    
+    // Extract base coin from coin pair (e.g., "BTC-PERP" -> "BTC")
+    const baseCoin = coin.toUpperCase().split('-')[0]
+    
+    // Apply coin-specific rounding rules
+    switch (baseCoin) {
+      case 'DOGE':
+        // DOGE: Round up to integer
+        return Math.ceil(rawSize)
+      case 'BTC':
+        // BTC: Round up to 0.00001 (5 decimal places)
+        return Math.ceil(rawSize * 100000) / 100000
+      case 'ETH':
+        // ETH: Round up to 0.0001 (4 decimal places)
+        return Math.ceil(rawSize * 10000) / 10000
+      case 'SOL':
+        // SOL: Round up to 0.01 (2 decimal places)
+        return Math.ceil(rawSize * 100) / 100
+      default:
+        // Default: Round up to 0.000001 (6 decimal places)
+        return Math.ceil(rawSize * 1000000) / 1000000
+    }
+  }
+
+  // Helper function to get the actual coin size for API calls
+  const getCoinSizeForApi = (): number => {
+    if (!state.size || !topCardPrice) return 0
+    
+    const sizeValue = parseFloat(state.size)
+    if (isNaN(sizeValue) || sizeValue <= 0) return 0
+    
+    if (state.sizeUnit === 'USD') {
+      return convertUsdToCoinSize(sizeValue, topCardPrice, state.selectedCoin)
+    } else {
+      return sizeValue // Already in coin units
+    }
+  }
+
+  // Helper function to calculate liquidation price
+  const calculateLiquidationPrice = (entryPrice: number, leverage: number, side: 'buy' | 'sell', coin: string = 'BTC') => {
+    // Different maintenance margins for different assets (typical values)
+    const maintenanceMargins: { [key: string]: number } = {
+      'BTC': 0.04,  // 4% for BTC
+      'ETH': 0.05,  // 5% for ETH
+      'SOL': 0.06,  // 6% for SOL
+      'default': 0.05 // 5% default
+    }
+    
+    const maintenanceMargin = maintenanceMargins[coin] || maintenanceMargins.default
+    
+    if (side === 'buy') {
+      // For long positions: LP = Entry Price * (1 - (1/Leverage) + Maintenance Margin)
+      // Example: BTC at $50,000, 10x leverage, 4% maintenance margin
+      // LP = 50,000 * (1 - (1/10) + 0.04) = 50,000 * (1 - 0.1 + 0.04) = 50,000 * 0.94 = $47,000
+      // This means the price can drop by 6% before liquidation
+      return entryPrice * (1 - (1 / leverage) + maintenanceMargin)
+    } else {
+      // For short positions: LP = Entry Price * (1 + (1/Leverage) - Maintenance Margin)
+      // Example: BTC at $50,000, 10x leverage, 4% maintenance margin
+      // LP = 50,000 * (1 + (1/10) - 0.04) = 50,000 * (1 + 0.1 - 0.04) = 50,000 * 1.06 = $53,000
+      // This means the price can rise by 6% before liquidation
+      return entryPrice * (1 + (1 / leverage) - maintenanceMargin)
+    }
+  }
   
   // Price subscription for selected coin
   const { price: currentPrice, prices: priceMap, isConnected: priceConnected, error: priceError } = usePriceSubscription(
@@ -66,19 +144,26 @@ const TradingInterface: React.FC = () => {
     ? priceMap[selectedCoinKey]
     : currentPrice
 
-  // Auto-update limit price with current market price when available
+  // Auto-update limit price with current market price when available (only if not manually set)
   useEffect(() => {
-    if (state.orderType === 'limit' && typeof topCardPrice === 'number' && !state.limitPrice) {
+    if (state.orderType === 'limit' && typeof topCardPrice === 'number' && !state.limitPrice && !state.limitPriceManuallySet) {
       setState(prev => ({ ...prev, limitPrice: topCardPrice.toString() }))
     }
-  }, [topCardPrice, state.orderType, state.limitPrice])
+  }, [topCardPrice, state.orderType, state.limitPrice, state.limitPriceManuallySet])
 
   // Update limit price when coin changes (if limit order is selected)
   useEffect(() => {
-    if (state.orderType === 'limit' && typeof topCardPrice === 'number') {
+    if (state.orderType === 'limit' && typeof topCardPrice === 'number' && !touchedFields.has('limitPrice')) {
       setState(prev => ({ ...prev, limitPrice: topCardPrice.toString() }))
     }
-  }, [state.selectedCoin, topCardPrice, state.orderType])
+  }, [state.selectedCoin, topCardPrice, state.orderType, touchedFields])
+
+  // Update size unit when coin changes (if currently showing a coin unit)
+  useEffect(() => {
+    if (state.sizeUnit !== 'USD') {
+      setState(prev => ({ ...prev, sizeUnit: state.selectedCoin }))
+    }
+  }, [state.selectedCoin])
 
   // Auto-calculate TP/SL prices when enabled
   useEffect(() => {
@@ -101,9 +186,381 @@ const TradingInterface: React.FC = () => {
       })
     }
   }, [state.takeProfitStopLoss, topCardPrice, state.side, state.takeProfitGain, state.stopLossLoss])
+
+  // Real-time validation
+  useEffect(() => {
+    const errors: string[] = []
+
+    // 1. Required Fields Present (only show if field has been touched)
+    if (touchedFields.has('selectedCoin') && !state.selectedCoin) {
+      errors.push('Please select a symbol/coin')
+    }
+    if (touchedFields.has('side') && !state.side) {
+      errors.push('Please choose order side (Buy/Sell)')
+    }
+    if (touchedFields.has('size') && (!state.size || state.size.trim() === '')) {
+      errors.push('Please enter order quantity')
+    }
+
+    // 2. Valid Quantity & Data Type Safety (only show if size field has been touched)
+    if (touchedFields.has('size') && state.size && state.size.trim() !== '') {
+      const sizeValue = parseFloat(state.size.trim())
+      
+      // Check for valid number
+      if (isNaN(sizeValue)) {
+        errors.push('Order quantity must be a valid number')
+      } else if (sizeValue <= 0) {
+        errors.push('Order quantity must be greater than 0')
+      } else if (sizeValue < 0.001) {
+        errors.push('Minimum order size is 0.001')
+      } else {
+        // 3. Check minimum order value (should be > 10 USD)
+        const orderValue = state.sizeUnit === 'USD' 
+          ? sizeValue  // For USD, order value is the size itself
+          : sizeValue * (currentPrice || 0)  // For coin units, multiply by price
+        
+        if (orderValue > 0 && orderValue < 10) {
+          errors.push('Minimum order value is $10 USD')
+        }
+        
+        // 5. UX Warnings for extreme values
+        if (orderValue > 1000000) {
+          errors.push('Warning: Order value is extremely large (>$1M)')
+        }
+        if (orderValue > 0 && orderValue < 1) {
+          errors.push('Warning: Order value is extremely small (<$1)')
+        }
+      }
+    }
+
+    // 4. Sufficient Balance (frontend hint) - only show if size field has been touched
+    if (touchedFields.has('size') && state.size && state.side && currentPrice && accountInfo) {
+      const sizeValue = parseFloat(state.size.trim())
+      if (!isNaN(sizeValue) && sizeValue > 0) {
+        const orderValue = state.sizeUnit === 'USD' 
+          ? sizeValue  // For USD, order value is the size itself
+          : sizeValue * currentPrice  // For coin units, multiply by price
+        
+        if (state.side === 'buy') {
+          // Check available balance for buy orders
+          const availableBalance = parseFloat(accountInfo.availableToTrade || '0')
+          if (orderValue > availableBalance) {
+            errors.push(`Insufficient balance. Required: $${orderValue.toFixed(2)}, Available: $${availableBalance.toFixed(2)}`)
+          }
+        } else {
+          // For sell orders, check position and margin requirements
+          const availableBalance = parseFloat(accountInfo.availableToTrade || '0')
+          const positionMatch = currentPosition.match(/(\d+\.?\d*)\s+(\w+)/)
+          
+          if (positionMatch) {
+            const availablePosition = parseFloat(positionMatch[1])
+            
+            if (sizeValue <= availablePosition) {
+              // Regular sell - user has sufficient position
+              // No additional validation needed
+            } else {
+              // Short sell - user is selling more than they own
+              const shortAmount = sizeValue - availablePosition
+              const shortValue = shortAmount * currentPrice
+              const requiredMargin = shortValue / state.leverage
+              
+              if (requiredMargin > availableBalance) {
+                errors.push(`Insufficient margin for short sell. Required margin: $${requiredMargin.toFixed(2)}, Available: $${availableBalance.toFixed(2)}`)
+              }
+              
+              // Additional short sell validations
+              if (state.leverage > 20) {
+                errors.push('Maximum leverage for short selling is 20x')
+              }
+              
+              if (requiredMargin < 50) {
+                errors.push('Minimum margin required for short selling is $50')
+              }
+            }
+          } else {
+            // If we can't parse position, assume it's a short sell and check margin
+            const shortValue = sizeValue * currentPrice
+            const requiredMargin = shortValue / state.leverage
+            
+            if (requiredMargin > availableBalance) {
+              errors.push(`Insufficient margin for short sell. Required margin: $${requiredMargin.toFixed(2)}, Available: $${availableBalance.toFixed(2)}`)
+            }
+            
+            // Additional short sell validations
+            if (state.leverage > 20) {
+              errors.push('Maximum leverage for short selling is 20x')
+            }
+            
+            if (requiredMargin < 50) {
+              errors.push('Minimum margin required for short selling is $50')
+            }
+          }
+        }
+      }
+    }
+
+    // Order type specific validation
+    switch (state.orderType) {
+      case 'limit':
+        if (touchedFields.has('limitPrice')) {
+          if (state.limitPrice && state.limitPrice.trim() !== '') {
+            const priceValue = parseFloat(state.limitPrice.trim())
+            if (isNaN(priceValue)) {
+              errors.push('Limit price must be a valid number')
+            } else if (priceValue <= 0) {
+              errors.push('Limit price must be greater than 0')
+            }
+          } else {
+            errors.push('Limit price is required for limit orders')
+          }
+        }
+        break
+
+      case 'scale':
+        if (touchedFields.has('scaleStartPrice')) {
+          if (state.scaleStartPrice && state.scaleStartPrice.trim() !== '') {
+            const startPrice = parseFloat(state.scaleStartPrice.trim())
+            if (isNaN(startPrice) || startPrice <= 0) {
+              errors.push('Scale start price must be a valid positive number')
+            }
+          } else {
+            errors.push('Scale start price is required')
+          }
+        }
+        
+        if (touchedFields.has('scaleEndPrice')) {
+          if (state.scaleEndPrice && state.scaleEndPrice.trim() !== '') {
+            const endPrice = parseFloat(state.scaleEndPrice.trim())
+            if (isNaN(endPrice) || endPrice <= 0) {
+              errors.push('Scale end price must be a valid positive number')
+            }
+          } else {
+            errors.push('Scale end price is required')
+          }
+        }
+        
+        if ((touchedFields.has('scaleStartPrice') || touchedFields.has('scaleEndPrice')) && 
+            state.scaleStartPrice && state.scaleEndPrice && 
+            state.scaleStartPrice.trim() !== '' && state.scaleEndPrice.trim() !== '') {
+          const startPrice = parseFloat(state.scaleStartPrice.trim())
+          const endPrice = parseFloat(state.scaleEndPrice.trim())
+          if (!isNaN(startPrice) && !isNaN(endPrice) && startPrice <= endPrice) {
+            errors.push('Start price must be higher than end price')
+          }
+        }
+        
+        if (touchedFields.has('scaleOrderCount')) {
+          if (state.scaleOrderCount && state.scaleOrderCount.trim() !== '') {
+            const orderCount = parseInt(state.scaleOrderCount.trim())
+            if (isNaN(orderCount) || orderCount <= 0) {
+              errors.push('Scale order count must be a valid positive number')
+            } else if (orderCount > 20) {
+              errors.push('Maximum 20 scale orders allowed')
+            }
+          } else {
+            errors.push('Scale order count is required')
+          }
+        }
+        break
+
+      case 'twap':
+        if (touchedFields.has('twapRunningTime')) {
+          if (state.twapRunningTimeHours && state.twapRunningTimeMinutes) {
+            const hours = parseInt(state.twapRunningTimeHours)
+            const minutes = parseInt(state.twapRunningTimeMinutes)
+            if (isNaN(hours) || isNaN(minutes)) {
+              errors.push('TWAP running time must be valid numbers')
+            } else {
+              const totalMinutes = (hours * 60) + minutes
+              if (totalMinutes < 5) {
+                errors.push('Minimum TWAP running time is 5 minutes')
+              }
+              if (totalMinutes > 1440) {
+                errors.push('Maximum TWAP running time is 24 hours')
+              }
+            }
+          } else {
+            errors.push('TWAP running time is required')
+          }
+        }
+        
+        if (touchedFields.has('twapNumberOfIntervals')) {
+          if (state.twapNumberOfIntervals && state.twapNumberOfIntervals.trim() !== '') {
+            const intervals = parseInt(state.twapNumberOfIntervals.trim())
+            if (isNaN(intervals) || intervals <= 0) {
+              errors.push('Number of intervals must be a valid positive number')
+            } else if (intervals > 100) {
+              errors.push('Maximum 100 intervals allowed')
+            }
+          } else {
+            errors.push('Number of intervals is required for TWAP orders')
+          }
+        }
+        break
+    }
+
+    // 5. Leverage-specific validation for all order types
+    if (touchedFields.has('size') && state.size && state.size.trim() !== '' && currentPrice && accountInfo) {
+      const sizeValue = parseFloat(state.size.trim())
+      if (!isNaN(sizeValue) && sizeValue > 0) {
+        const orderValue = state.sizeUnit === 'USD' 
+          ? sizeValue  // For USD, order value is the size itself
+          : sizeValue * currentPrice  // For coin units, multiply by price
+        const availableBalance = parseFloat(accountInfo.availableToTrade || '0')
+        const requiredMargin = orderValue / state.leverage
+        
+        // Check if user has sufficient margin for the leverage
+        if (requiredMargin > availableBalance) {
+          errors.push(`Insufficient margin for ${state.leverage}x leverage. Required: $${requiredMargin.toFixed(2)}, Available: $${availableBalance.toFixed(2)}`)
+        }
+        
+        // Order type specific leverage validations
+        switch (state.orderType) {
+          case 'market':
+            // Market orders: Standard leverage limits
+            if (state.leverage > 50) {
+              errors.push('Maximum leverage for market orders is 50x')
+            }
+            if (state.leverage < 1) {
+              errors.push('Minimum leverage is 1x')
+            }
+            break
+            
+          case 'limit':
+            // Limit orders: Standard leverage limits
+            if (state.leverage > 50) {
+              errors.push('Maximum leverage for limit orders is 50x')
+            }
+            if (state.leverage < 1) {
+              errors.push('Minimum leverage is 1x')
+            }
+            break
+            
+          case 'scale':
+            // Scale orders: More conservative leverage due to multiple orders
+            if (state.leverage > 20) {
+              errors.push('Maximum leverage for scale orders is 20x (risk management)')
+            }
+            if (state.leverage < 1) {
+              errors.push('Minimum leverage is 1x')
+            }
+            
+            // Additional scale order leverage validation
+            if (state.scaleOrderCount && state.scaleOrderCount.trim() !== '') {
+              const orderCount = parseInt(state.scaleOrderCount.trim())
+              if (!isNaN(orderCount) && orderCount > 0) {
+                // Higher leverage with more orders increases risk
+                if (orderCount > 10 && state.leverage > 10) {
+                  errors.push('Maximum 10x leverage allowed for scale orders with more than 10 orders')
+                }
+                if (orderCount > 15 && state.leverage > 5) {
+                  errors.push('Maximum 5x leverage allowed for scale orders with more than 15 orders')
+                }
+              }
+            }
+            break
+            
+          case 'twap':
+            // TWAP orders: Conservative leverage due to time exposure
+            if (state.leverage > 15) {
+              errors.push('Maximum leverage for TWAP orders is 15x (time exposure risk)')
+            }
+            if (state.leverage < 1) {
+              errors.push('Minimum leverage is 1x')
+            }
+            
+            // Additional TWAP leverage validation based on duration
+            if (state.twapRunningTimeHours && state.twapRunningTimeMinutes) {
+              const hours = parseInt(state.twapRunningTimeHours)
+              const minutes = parseInt(state.twapRunningTimeMinutes)
+              if (!isNaN(hours) && !isNaN(minutes)) {
+                const totalMinutes = (hours * 60) + minutes
+                
+                // Longer TWAP periods require lower leverage
+                if (totalMinutes > 720 && state.leverage > 10) { // > 12 hours
+                  errors.push('Maximum 10x leverage for TWAP orders longer than 12 hours')
+                }
+                if (totalMinutes > 1440 && state.leverage > 5) { // > 24 hours
+                  errors.push('Maximum 5x leverage for TWAP orders longer than 24 hours')
+                }
+              }
+            }
+            break
+        }
+        
+        // Side-specific leverage validations
+        if (state.side === 'sell') {
+          // Short selling has additional leverage restrictions
+          if (state.leverage > 20) {
+            errors.push('Maximum leverage for short selling is 20x')
+          }
+        }
+        
+        // Asset-specific leverage validations
+        const assetLeverageLimits: { [key: string]: number } = {
+          'BTC': 50,   // Bitcoin: Standard limits
+          'ETH': 40,   // Ethereum: Slightly lower
+          'SOL': 30,   // Solana: More volatile
+          'default': 50
+        }
+        
+        const maxLeverageForAsset = assetLeverageLimits[state.selectedCoin] || assetLeverageLimits.default
+        if (state.leverage > maxLeverageForAsset) {
+          errors.push(`Maximum leverage for ${state.selectedCoin} is ${maxLeverageForAsset}x`)
+        }
+        
+        // Minimum margin requirements based on leverage
+        if (state.leverage >= 20 && requiredMargin < 100) {
+          errors.push('Minimum margin required for 20x+ leverage is $100')
+        }
+        if (state.leverage >= 30 && requiredMargin < 200) {
+          errors.push('Minimum margin required for 30x+ leverage is $200')
+        }
+        if (state.leverage >= 40 && requiredMargin < 500) {
+          errors.push('Minimum margin required for 40x+ leverage is $500')
+        }
+      }
+    }
+
+    // Take Profit / Stop Loss validation
+    if (state.takeProfitStopLoss) {
+      if (touchedFields.has('takeProfitPrice') && state.takeProfitPrice && state.takeProfitPrice.trim() !== '') {
+        const tpPrice = parseFloat(state.takeProfitPrice.trim())
+        if (isNaN(tpPrice) || tpPrice <= 0) {
+          errors.push('Take profit price must be a valid positive number')
+        }
+      }
+      
+      if (touchedFields.has('stopLossPrice') && state.stopLossPrice && state.stopLossPrice.trim() !== '') {
+        const slPrice = parseFloat(state.stopLossPrice.trim())
+        if (isNaN(slPrice) || slPrice <= 0) {
+          errors.push('Stop loss price must be a valid positive number')
+        }
+      }
+      
+      if (touchedFields.has('takeProfitGain') && state.takeProfitGain && state.takeProfitGain.trim() !== '') {
+        const tpGain = parseFloat(state.takeProfitGain.trim())
+        if (isNaN(tpGain) || tpGain <= 0 || tpGain > 1000) {
+          errors.push('Take profit gain must be between 0.01% and 1000%')
+        }
+      }
+      
+      if (touchedFields.has('stopLossLoss') && state.stopLossLoss && state.stopLossLoss.trim() !== '') {
+        const slLoss = parseFloat(state.stopLossLoss.trim())
+        if (isNaN(slLoss) || slLoss <= 0 || slLoss > 100) {
+          errors.push('Stop loss must be between 0.01% and 100%')
+        }
+      }
+    }
+
+    setValidationErrors(errors)
+  }, [state, currentPrice, accountInfo, touchedFields, currentPosition])
   
   const handleSizeChange = (value: string) => {
-    setState(prev => ({ ...prev, size: value }))
+    // Normalize input: trim spaces, allow only numbers and decimal point
+    const normalizedValue = value.trim().replace(/[^0-9.]/g, '')
+    markFieldAsTouched('size')
+    setState(prev => ({ ...prev, size: normalizedValue }))
   }
 
   const handleSizePercentageChange = (percentage: number) => {
@@ -111,44 +568,71 @@ const TradingInterface: React.FC = () => {
   }
 
   const handleLimitPriceChange = (value: string) => {
-    // Only allow numeric input (including decimal point)
-    const numericValue = value.replace(/[^0-9.]/g, '')
+    // Normalize input: trim spaces, only allow numeric input (including decimal point)
+    const trimmedValue = value.trim()
+    const numericValue = trimmedValue.replace(/[^0-9.]/g, '')
     // Prevent multiple decimal points
     const parts = numericValue.split('.')
     const formattedValue = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : numericValue
+    markFieldAsTouched('limitPrice')
     setState(prev => ({ ...prev, limitPrice: formattedValue }))
   }
 
+  const handleLimitPriceBlur = () => {
+    // Format price according to tick size when user finishes editing
+    if (state.limitPrice && !isNaN(parseFloat(state.limitPrice))) {
+      const price = parseFloat(state.limitPrice)
+      const formattedPrice = formatPriceForTickSize(price, state.selectedCoin)
+      setState(prev => ({ ...prev, limitPrice: formattedPrice }))
+    }
+  }
+
   const handleScalePriceChange = (field: 'scaleStartPrice' | 'scaleEndPrice' | 'scaleStepSize', value: string) => {
-    // Only allow numeric input (including decimal point)
-    const numericValue = value.replace(/[^0-9.]/g, '')
+    // Normalize input: trim spaces, only allow numeric input (including decimal point)
+    const trimmedValue = value.trim()
+    const numericValue = trimmedValue.replace(/[^0-9.]/g, '')
     // Prevent multiple decimal points
     const parts = numericValue.split('.')
     const formattedValue = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : numericValue
+    markFieldAsTouched(field)
     setState(prev => ({ ...prev, [field]: formattedValue }))
   }
 
   const handleScaleOrderCountChange = (value: string) => {
-    // Only allow positive integers
-    const numericValue = value.replace(/[^0-9]/g, '')
+    // Normalize input: trim spaces, only allow positive integers
+    const trimmedValue = value.trim()
+    const numericValue = trimmedValue.replace(/[^0-9]/g, '')
+    markFieldAsTouched('scaleOrderCount')
     setState(prev => ({ ...prev, scaleOrderCount: numericValue }))
   }
 
   const handleTwapNumericChange = (field: 'twapRunningTimeHours' | 'twapRunningTimeMinutes' | 'twapNumberOfIntervals' | 'twapPriceOffset', value: string) => {
-    // Only allow numeric input (including decimal point)
-    const numericValue = value.replace(/[^0-9.]/g, '')
+    // Normalize input: trim spaces, only allow numeric input (including decimal point)
+    const trimmedValue = value.trim()
+    const numericValue = trimmedValue.replace(/[^0-9.]/g, '')
     // Prevent multiple decimal points
     const parts = numericValue.split('.')
     const formattedValue = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : numericValue
+    
+    // Mark appropriate fields as touched
+    if (field === 'twapRunningTimeHours' || field === 'twapRunningTimeMinutes') {
+      markFieldAsTouched('twapRunningTime')
+    } else {
+      markFieldAsTouched(field)
+    }
+    
     setState(prev => ({ ...prev, [field]: formattedValue }))
   }
 
   const handleTPSLChange = (field: 'takeProfitPrice' | 'stopLossPrice' | 'takeProfitGain' | 'stopLossLoss', value: string) => {
-    // Only allow numeric input (including decimal point)
-    const numericValue = value.replace(/[^0-9.]/g, '')
+    // Normalize input: trim spaces, only allow numeric input (including decimal point)
+    const trimmedValue = value.trim()
+    const numericValue = trimmedValue.replace(/[^0-9.]/g, '')
     // Prevent multiple decimal points
     const parts = numericValue.split('.')
     const formattedValue = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : numericValue
+    
+    markFieldAsTouched(field)
     
     setState(prev => {
       const newState = { ...prev, [field]: formattedValue }
@@ -177,6 +661,7 @@ const TradingInterface: React.FC = () => {
   }
 
   const handleCoinChange = async (coin: string) => {
+    markFieldAsTouched('selectedCoin')
     setState(prev => ({ ...prev, selectedCoin: coin }))
     
     // Update position for the selected coin
@@ -190,10 +675,82 @@ const TradingInterface: React.FC = () => {
     }
   }
 
+  const handleSideChange = (side: 'buy' | 'sell') => {
+    markFieldAsTouched('side')
+    setState(prev => ({ ...prev, side }))
+  }
+
   const handleSubmitOrder = async () => {
+    // Show confirmation popup instead of immediately submitting
+    const coinSize = getCoinSizeForApi()
+    const convertedSize = state.sizeUnit === 'USD' && coinSize > 0 
+      ? (() => {
+          // Extract base coin from coin pair (e.g., "BTC-PERP" -> "BTC")
+          const baseCoin = state.selectedCoin.toUpperCase().split('-')[0]
+          
+          // Use appropriate decimal places based on base coin
+          switch (baseCoin) {
+            case 'DOGE':
+              return coinSize.toFixed(0)
+            case 'BTC':
+              return coinSize.toFixed(5)
+            case 'ETH':
+              return coinSize.toFixed(4)
+            case 'SOL':
+              return coinSize.toFixed(2)
+            default:
+              return coinSize.toFixed(6)
+          }
+        })()
+      : undefined
+
+    // Prepare order details for confirmation
+    const orderDetails = {
+      action: state.side === 'buy' ? 'Buy' : 'Sell',
+      size: state.sizeUnit === 'USD' 
+        ? `${convertedSize || state.size} ${state.selectedCoin}` 
+        : `${state.size} ${state.selectedCoin}`,
+      price: state.orderType === 'market' ? 'Market' : state.limitPrice,
+      liquidationPrice: (() => {
+        if (state.size && typeof topCardPrice === 'number') {
+          const entryPrice = state.orderType === 'limit' && state.limitPrice 
+            ? parseFloat(state.limitPrice) 
+            : topCardPrice
+          const leverage = state.leverage
+          const liquidationPrice = calculateLiquidationPrice(entryPrice, leverage, state.side, state.selectedCoin)
+          return `$${liquidationPrice.toFixed(2)}`
+        }
+        return 'N/A'
+      })(),
+      convertedSize,
+      originalSize: state.size,
+      sizeUnit: state.sizeUnit,
+      coinSize,
+      orderType: state.orderType,
+      selectedCoin: state.selectedCoin,
+      side: state.side,
+      leverage: state.leverage
+    }
+
+    setPendingOrder(orderDetails)
+    setShowConfirmPopup(true)
+  }
+
+  const handleConfirmOrder = async () => {
+    if (!pendingOrder) return
+
     try {
-      console.log('🎨 Component: Submitting order...')
-      const result = await placeOrder()
+      console.log('🎨 Component: Confirming order...')
+      
+      console.log('🎨 Component: Size conversion:', {
+        originalSize: pendingOrder.originalSize,
+        sizeUnit: pendingOrder.sizeUnit,
+        coinSize: pendingOrder.coinSize,
+        convertedSize: pendingOrder.convertedSize,
+        orderType: pendingOrder.orderType
+      })
+      
+      const result = await placeOrder(pendingOrder.convertedSize, topCardPrice || undefined)
       
       // Handle scale order responses differently
       if (result?.type === 'scale') {
@@ -262,6 +819,9 @@ const TradingInterface: React.FC = () => {
         }
       }
       
+      // Close confirmation popup and show order result
+      setShowConfirmPopup(false)
+      setPendingOrder(null)
       setShowOrderPopup(true)
       
     } catch (err) {
@@ -274,8 +834,17 @@ const TradingInterface: React.FC = () => {
         message: 'Order placement failed',
         data: err
       })
+      
+      // Close confirmation popup and show error
+      setShowConfirmPopup(false)
+      setPendingOrder(null)
       setShowOrderPopup(true)
     }
+  }
+
+  const handleCancelOrder = () => {
+    setShowConfirmPopup(false)
+    setPendingOrder(null)
   }
 
   const handleLeverageChange = async (leverage: number) => {
@@ -316,6 +885,7 @@ const TradingInterface: React.FC = () => {
     loadNetworkStatus()
   }, [isInitialized, getNetworkStatus])
 
+
   // Close order popup
   const handleCloseOrderPopup = () => {
     setShowOrderPopup(false)
@@ -329,6 +899,24 @@ const TradingInterface: React.FC = () => {
         <div className="mb-4 p-3 bg-red-900/20 border border-red-500 rounded flex items-center gap-2 text-red-400">
           <AlertCircle size={16} />
           <span className="text-sm">{error}</span>
+        </div>
+      )}
+
+      {/* Validation Errors Display */}
+      {validationErrors.length > 0 && (
+        <div className="mb-4 p-3 bg-yellow-900/20 border border-yellow-500 rounded">
+          <div className="flex items-center gap-2 text-yellow-400 mb-2">
+            <AlertCircle size={16} />
+            <span className="text-sm font-medium">Validation Issues:</span>
+          </div>
+          <ul className="text-yellow-300 text-sm space-y-1">
+            {validationErrors.map((error, index) => (
+              <li key={index} className="flex items-start gap-2">
+                <span className="text-yellow-400">•</span>
+                <span>{error}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -552,17 +1140,17 @@ const TradingInterface: React.FC = () => {
               ? 'bg-teal-primary text-white'
               : 'bg-dark-border text-gray-400 hover:text-white'
           }`}
-          onClick={() => setState(prev => ({ ...prev, side: 'buy' }))}
+          onClick={() => handleSideChange('buy')}
         >
           Buy / Long
         </button>
         <button
           className={`flex-1 py-3 rounded font-medium ${
             state.side === 'sell'
-              ? 'bg-teal-primary text-white'
+              ? 'bg-red-600 text-white'
               : 'bg-dark-border text-gray-400 hover:text-white'
           }`}
-          onClick={() => setState(prev => ({ ...prev, side: 'sell' }))}
+          onClick={() => handleSideChange('sell')}
         >
           Sell / Short
         </button>
@@ -592,13 +1180,41 @@ const TradingInterface: React.FC = () => {
           />
           <select
             value={state.sizeUnit}
-            onChange={(e) => setState(prev => ({ ...prev, sizeUnit: e.target.value as 'USD' | 'BTC' }))}
+            onChange={(e) => setState(prev => ({ ...prev, sizeUnit: e.target.value as 'USD' | string }))}
             className="px-3 py-2 bg-dark-border border border-gray-600 rounded text-white focus:outline-none focus:border-teal-primary"
           >
             <option value="USD">USD</option>
-            <option value="BTC">BTC</option>
+            <option value={state.selectedCoin}>{state.selectedCoin}</option>
           </select>
         </div>
+
+        {/* Coin Size Display (when USD is selected) */}
+        {state.sizeUnit === 'USD' && state.size && topCardPrice && (
+          <div className="mb-2 text-sm text-gray-400">
+            <span>Coin Size: </span>
+            <span className="text-white">
+              {(() => {
+                const coinSize = convertUsdToCoinSize(parseFloat(state.size), topCardPrice, state.selectedCoin)
+                // Extract base coin from coin pair (e.g., "BTC-PERP" -> "BTC")
+                const baseCoin = state.selectedCoin.toUpperCase().split('-')[0]
+                
+                // Show appropriate decimal places based on base coin
+                switch (baseCoin) {
+                  case 'DOGE':
+                    return `${coinSize.toFixed(0)} ${state.selectedCoin}`
+                  case 'BTC':
+                    return `${coinSize.toFixed(5)} ${state.selectedCoin}`
+                  case 'ETH':
+                    return `${coinSize.toFixed(4)} ${state.selectedCoin}`
+                  case 'SOL':
+                    return `${coinSize.toFixed(2)} ${state.selectedCoin}`
+                  default:
+                    return `${coinSize.toFixed(6)} ${state.selectedCoin}`
+                }
+              })()}
+            </span>
+          </div>
+        )}
 
         {/* Price Input Section */}
         {state.orderType === 'limit' ? (
@@ -611,13 +1227,16 @@ const TradingInterface: React.FC = () => {
                 placeholder="Limit Price"
                 value={state.limitPrice}
                 onChange={(e) => handleLimitPriceChange(e.target.value)}
+                onBlur={handleLimitPriceBlur}
                 className="flex-1 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-teal-primary"
               />
               <button
                 type="button"
                 onClick={() => {
                   if (typeof topCardPrice === 'number') {
-                    setState(prev => ({ ...prev, limitPrice: topCardPrice.toString() }))
+                    const formattedPrice = formatPriceForTickSize(topCardPrice, state.selectedCoin)
+                    markFieldAsTouched('limitPrice')
+                    setState(prev => ({ ...prev, limitPrice: formattedPrice }))
                   }
                 }}
                 disabled={typeof topCardPrice !== 'number'}
@@ -625,6 +1244,22 @@ const TradingInterface: React.FC = () => {
               >
                 Mid
               </button>
+            </div>
+            
+            {/* Time In Force Selection */}
+            <div className="mt-2">
+              <select
+                value={state.timeInForce}
+                onChange={(e) => {
+                  markFieldAsTouched('timeInForce')
+                  setState(prev => ({ ...prev, timeInForce: e.target.value as 'GTC' | 'IOC' | 'ALO' }))
+                }}
+                className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-white focus:outline-none focus:border-teal-primary"
+              >
+                <option value="GTC">GTC - Good Till Canceled</option>
+                <option value="IOC">IOC - Immediate Or Cancel</option>
+                <option value="ALO">ALO - Add Liquidity Only</option>
+              </select>
             </div>
           </div>
         ) : state.orderType === 'scale' ? (
@@ -1049,10 +1684,28 @@ const TradingInterface: React.FC = () => {
         </label>
       </div>
 
+      {/* Error Messages */}
+      {validationErrors.length > 0 && (
+        <div className="mb-4 p-3 bg-yellow-900/20 border border-yellow-500 rounded">
+          <div className="flex items-center gap-2 text-yellow-400 mb-2">
+            <AlertCircle size={16} />
+            <span className="text-sm font-medium">Validation Issues:</span>
+          </div>
+          <ul className="text-yellow-300 text-sm space-y-1">
+            {validationErrors.map((error, index) => (
+              <li key={index} className="flex items-start gap-2">
+                <span className="text-yellow-400">•</span>
+                <span>{error}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Submit Button */}
       <button
         onClick={handleSubmitOrder}
-        disabled={!isInitialized || isLoading || !state.size || 
+        disabled={!isInitialized || isLoading || !state.size || validationErrors.length > 0 ||
           (state.orderType === 'scale' && (!state.scaleStartPrice || !state.scaleEndPrice || !state.scaleOrderCount)) ||
           (state.orderType === 'twap' && (!state.twapRunningTimeHours || !state.twapRunningTimeMinutes || !state.twapNumberOfIntervals))}
         className="w-full py-3 bg-teal-primary hover:bg-teal-hover disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded mb-6 transition-colors"
@@ -1070,20 +1723,14 @@ const TradingInterface: React.FC = () => {
           <span className="text-white">
             {(() => {
               if (state.size && typeof topCardPrice === 'number') {
-                // Simplified liquidation price calculation
-                // In reality, this would depend on current position, margin, and leverage
-                const currentPrice = topCardPrice
+                // Calculate liquidation price based on order parameters
+                const entryPrice = state.orderType === 'limit' && state.limitPrice 
+                  ? parseFloat(state.limitPrice) 
+                  : topCardPrice // Use current price for market orders
                 const leverage = state.leverage
                 
-                if (state.side === 'buy') {
-                  // For long positions, liquidation price is lower
-                  const liquidationPrice = currentPrice * (1 - (1 / leverage) + 0.1) // 10% buffer
-                  return liquidationPrice.toFixed(10)
-                } else {
-                  // For short positions, liquidation price is higher
-                  const liquidationPrice = currentPrice * (1 + (1 / leverage) + 0.1) // 10% buffer
-                  return liquidationPrice.toFixed(10)
-                }
+                const liquidationPrice = calculateLiquidationPrice(entryPrice, leverage, state.side, state.selectedCoin)
+                return `$${liquidationPrice.toFixed(2)}`
               }
               return 'N/A'
             })()}
@@ -1093,10 +1740,14 @@ const TradingInterface: React.FC = () => {
           <span className="text-gray-400">Order Value:</span>
           <span className="text-white">
             {(() => {
-              if (state.size && state.sizeUnit === 'USD') {
-                return `$${parseFloat(state.size).toFixed(2)}`
-              } else if (state.size && state.sizeUnit === 'BTC' && typeof topCardPrice === 'number') {
-                const value = parseFloat(state.size) * topCardPrice
+              // Check if size is valid
+              const sizeValue = parseFloat(state.size || '0')
+              const isValidSize = !isNaN(sizeValue) && sizeValue > 0
+              
+              if (state.size && state.sizeUnit === 'USD' && isValidSize) {
+                return `$${sizeValue.toFixed(2)}`
+              } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number' && isValidSize) {
+                const value = sizeValue * topCardPrice
                 return `$${value.toFixed(2)}`
               }
               return 'N/A'
@@ -1110,7 +1761,7 @@ const TradingInterface: React.FC = () => {
               if (state.size && state.sizeUnit === 'USD') {
                 const margin = parseFloat(state.size) / state.leverage
                 return `$${margin.toFixed(2)}`
-              } else if (state.size && state.sizeUnit === 'BTC' && typeof topCardPrice === 'number') {
+              } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number') {
                 const value = parseFloat(state.size) * topCardPrice
                 const margin = value / state.leverage
                 return `$${margin.toFixed(2)}`
@@ -1134,7 +1785,7 @@ const TradingInterface: React.FC = () => {
                 const makerFee = parseFloat(state.size) * 0.0001 // 0.01% maker fee
                 const takerFee = parseFloat(state.size) * 0.0002 // 0.02% taker fee
                 return `${(makerFee * 100).toFixed(4)}% / ${(takerFee * 100).toFixed(4)}%`
-              } else if (state.size && state.sizeUnit === 'BTC' && typeof topCardPrice === 'number') {
+              } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number') {
                 const value = parseFloat(state.size) * topCardPrice
                 const makerFee = value * 0.0001
                 const takerFee = value * 0.0002
@@ -1145,6 +1796,68 @@ const TradingInterface: React.FC = () => {
           </span>
         </div>
       </div>
+
+      {/* Order Confirmation Popup */}
+      {showConfirmPopup && pendingOrder && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-dark-bg border border-gray-600 rounded-lg p-6 w-96 max-w-md mx-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">Confirm Order</h3>
+              <button
+                onClick={handleCancelOrder}
+                className="text-gray-400 hover:text-white transition-colors"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <div className="space-y-3 mb-6">
+              <div className="flex justify-between">
+                <span className="text-gray-400">Action:</span>
+                <span className={`font-medium ${pendingOrder.action === 'Buy' ? 'text-green-400' : 'text-red-400'}`}>
+                  {pendingOrder.action}
+                </span>
+              </div>
+              
+              <div className="flex justify-between">
+                <span className="text-gray-400">Size:</span>
+                <span className="text-white font-medium">{pendingOrder.size}</span>
+              </div>
+              
+              <div className="flex justify-between">
+                <span className="text-gray-400">Price:</span>
+                <span className="text-white font-medium">{pendingOrder.price}</span>
+              </div>
+              
+              <div className="flex justify-between">
+                <span className="text-gray-400">Est. Liquidation Price:</span>
+                <span className="text-white font-medium">{pendingOrder.liquidationPrice}</span>
+              </div>
+            </div>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={handleCancelOrder}
+                className="flex-1 px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmOrder}
+                className={`flex-1 px-4 py-2 rounded transition-colors font-medium ${
+                  pendingOrder.action === 'Buy'
+                    ? 'bg-green-600 hover:bg-green-700 text-white'
+                    : 'bg-red-600 hover:bg-red-700 text-white'
+                }`}
+              >
+                Confirm {pendingOrder.action}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Order Response Popup */}
       <OrderResponsePopup
