@@ -32,11 +32,7 @@ let isFetchingPrices = false
 const getNetworkName = () => (CONFIG.USE_TESTNET ? 'testnet' : 'mainnet')
 
 const broadcastPrices = (prices = latestPrices) => {
-  console.log('📡 broadcastPrices called with:', prices)
-  console.log('📡 Connected SSE clients:', priceStreamClients.size)
-  
   if (!prices || Object.keys(prices).length === 0) {
-    console.log('⚠️ No prices to broadcast')
     return
   }
 
@@ -47,15 +43,11 @@ const broadcastPrices = (prices = latestPrices) => {
     timestamp: Date.now()
   }
 
-  console.log('📡 Broadcasting price update to', priceStreamClients.size, 'clients')
-  console.log('📡 Price update payload:', JSON.stringify(payload, null, 2))
-
   const data = `data: ${JSON.stringify(payload)}\n\n`
 
   for (const client of priceStreamClients) {
     try {
       client.write(data)
-      console.log('✅ Price update sent to SSE client')
     } catch (error) {
       console.error('❌ Failed to write to SSE client:', error.message)
       priceStreamClients.delete(client)
@@ -76,62 +68,37 @@ const stopPriceFeed = () => {
 }
 
 const fetchAndBroadcastPrices = async () => {
-  console.log('🔄 fetchAndBroadcastPrices called')
-  
   if (!sdk || isFetchingPrices) {
-    console.log('⚠️ Skipping price fetch - SDK not available or already fetching')
     return
   }
 
-  console.log('🔄 Starting price fetch...')
   isFetchingPrices = true
 
   try {
-    console.log('🔄 Calling sdk.info.getAllMids()...')
-    console.log('🔄 SDK object:', sdk)
-    console.log('🔄 SDK.info:', sdk.info)
-    console.log('🔄 SDK.info.general:', sdk.info?.general)
-    
     const snapshot = await sdk.info.getAllMids()
-    console.log('✅ Received price snapshot:', snapshot)
     
     if (snapshot && typeof snapshot === 'object') {
       latestPrices = snapshot
-      console.log('✅ Updated latestPrices, broadcasting...')
       broadcastPrices()
-    } else {
-      console.log('⚠️ Invalid snapshot received:', snapshot)
     }
   } catch (error) {
     console.error('❌ Failed to fetch price snapshot:', error.message)
-    console.error('❌ Error details:', error)
   } finally {
     isFetchingPrices = false
-    console.log('🔄 Price fetch completed')
   }
 }
 
 const ensurePriceFeed = async () => {
-  console.log('🔄 ensurePriceFeed called')
-  
   if (!sdk) {
-    console.error('❌ SDK not initialized in ensurePriceFeed')
     throw new Error('SDK not initialized')
   }
 
-  console.log('✅ SDK is available, checking pricePollInterval')
-  
   if (pricePollInterval) {
-    console.log('✅ Price feed already running, skipping initialization')
     return
   }
 
-  console.log('🔄 Starting price feed initialization...')
   await fetchAndBroadcastPrices()
-
-  console.log('🔄 Setting up price polling interval (1 second)')
   pricePollInterval = setInterval(fetchAndBroadcastPrices, 1000)
-  console.log('✅ Price feed initialized successfully')
 }
 
 async function initializeSDK() {
@@ -200,15 +167,11 @@ app.get('/api/prices', async (req, res) => {
 
 // Server-Sent Events stream for realtime prices
 app.get('/api/price-stream', async (req, res) => {
-  console.log('🔌 New SSE client connecting to /api/price-stream')
-  
   if (!sdk) {
-    console.error('❌ SDK not initialized for SSE client')
     res.status(503).json({ error: 'SDK not initialized' })
     return
   }
 
-  console.log('✅ SDK is initialized, setting up SSE headers')
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
@@ -218,17 +181,14 @@ app.get('/api/price-stream', async (req, res) => {
   }
 
   priceStreamClients.add(res)
-  console.log(`📊 Total SSE clients connected: ${priceStreamClients.size}`)
 
   const keepAlive = setInterval(() => {
     res.write(': keep-alive\n\n')
   }, 30000)
 
   req.on('close', () => {
-    console.log('🔌 SSE client disconnected')
     clearInterval(keepAlive)
     priceStreamClients.delete(res)
-    console.log(`📊 Remaining SSE clients: ${priceStreamClients.size}`)
     try {
       res.end()
     } catch (error) {
@@ -246,12 +206,9 @@ app.get('/api/price-stream', async (req, res) => {
   )
 
   try {
-    console.log('🔄 Attempting to initialize price feed for SSE client...')
     await ensurePriceFeed()
-    console.log('✅ Price feed initialization completed for SSE client')
   } catch (error) {
     console.error('❌ Failed to initialize price feed for SSE client:', error.message)
-    console.error('❌ Error details:', error)
     res.write(
       `data: ${JSON.stringify({
         type: 'error',
@@ -263,12 +220,7 @@ app.get('/api/price-stream', async (req, res) => {
   }
 
   // Send current prices if available
-  console.log('📊 Checking for existing prices...')
-  console.log('📊 latestPrices:', latestPrices)
-  console.log('📊 latestPrices keys:', Object.keys(latestPrices || {}))
-  
   if (latestPrices && Object.keys(latestPrices).length > 0) {
-    console.log('✅ Sending initial price snapshot to SSE client')
     res.write(
       `data: ${JSON.stringify({
         type: 'snapshot',
@@ -278,7 +230,6 @@ app.get('/api/price-stream', async (req, res) => {
       })}\n\n`
     )
   } else {
-    console.log('⚠️ No prices available to send to SSE client')
     res.write(
       `data: ${JSON.stringify({
         type: 'no_data',

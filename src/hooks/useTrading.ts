@@ -16,6 +16,21 @@ export interface TradingState {
   limitPrice: string
   stopLossPrice: string
   takeProfitPrice: string
+  takeProfitGain: string
+  stopLossLoss: string
+  // Scale order specific fields
+  scaleStartPrice: string
+  scaleEndPrice: string
+  scaleStepSize: string
+  scaleOrderCount: string
+  scaleSizeDistribution: 'equal' | 'linear'
+  // TWAP order specific fields
+  twapRunningTimeHours: string
+  twapRunningTimeMinutes: string
+  twapNumberOfIntervals: string
+  twapOrderType: 'market' | 'limit'
+  twapPriceOffset: string
+  twapRandomize: boolean
 }
 
 export interface AccountInfo {
@@ -55,7 +70,22 @@ export const useTrading = () => {
     takeProfitStopLoss: false,
     limitPrice: '',
     stopLossPrice: '',
-    takeProfitPrice: ''
+    takeProfitPrice: '',
+    takeProfitGain: '10',
+    stopLossLoss: '10',
+    // Scale order defaults
+    scaleStartPrice: '',
+    scaleEndPrice: '',
+    scaleStepSize: '',
+    scaleOrderCount: '5',
+    scaleSizeDistribution: 'equal',
+    // TWAP order defaults
+    twapRunningTimeHours: '0',
+    twapRunningTimeMinutes: '30',
+    twapNumberOfIntervals: '10',
+    twapOrderType: 'market',
+    twapPriceOffset: '0.1',
+    twapRandomize: false
   })
 
   // Initialize the SDK
@@ -123,6 +153,16 @@ export const useTrading = () => {
       setIsLoading(true)
       setError(null)
 
+      // Handle scale orders differently
+      if (state.orderType === 'scale') {
+        return await placeScaleOrder()
+      }
+
+      // Handle TWAP orders differently
+      if (state.orderType === 'twap') {
+        return await placeTwapOrder()
+      }
+
       // Format order according to Hyperliquid API specification
       const orderParams: OrderParams = {
         coin: state.selectedCoin,  // Use selected coin instead of default
@@ -153,6 +193,179 @@ export const useTrading = () => {
       throw err
     } finally {
       setIsLoading(false)
+    }
+  }, [state, loadAccountData])
+
+  // Place scale order (multiple orders)
+  const placeScaleOrder = useCallback(async () => {
+    const startPrice = parseFloat(state.scaleStartPrice)
+    const endPrice = parseFloat(state.scaleEndPrice)
+    const orderCount = parseInt(state.scaleOrderCount)
+    const totalSize = parseFloat(state.size)
+
+    // Validate scale order parameters
+    if (isNaN(startPrice) || isNaN(endPrice) || isNaN(orderCount) || orderCount <= 0) {
+      setError('Please enter valid scale order parameters')
+      return
+    }
+
+    if (startPrice <= endPrice) {
+      setError('Start price must be higher than end price')
+      return
+    }
+
+    const results = []
+    const priceStep = (startPrice - endPrice) / (orderCount - 1)
+
+    for (let i = 0; i < orderCount; i++) {
+      const price = (startPrice - (priceStep * i)).toFixed(2)
+      let size = totalSize / orderCount // Equal distribution
+      
+      if (state.scaleSizeDistribution === 'linear') {
+        // Linear distribution - larger sizes at better prices
+        const factor = (orderCount - i) / orderCount
+        size = totalSize * factor * (2 / orderCount)
+      }
+
+      const orderParams: OrderParams = {
+        coin: state.selectedCoin,
+        is_buy: state.side === 'buy',
+        sz: size.toFixed(4),
+        reduce_only: state.reduceOnly,
+        order_type: getOrderType('limit'), // Scale orders are limit orders
+        limit_px: price
+      }
+
+      try {
+        const result = await hyperliquidService.placeOrder(orderParams)
+        results.push({ order: i + 1, result, price, size: size.toFixed(4) })
+        console.log(`Scale order ${i + 1} placed: $${price} × ${size.toFixed(4)}`)
+      } catch (err) {
+        console.error(`Failed to place scale order ${i + 1}:`, err)
+        results.push({ order: i + 1, error: err, price, size: size.toFixed(4) })
+      }
+    }
+
+    // Reload account data after all orders
+    await loadAccountData()
+    
+    return {
+      type: 'scale',
+      results,
+      totalOrders: orderCount,
+      successfulOrders: results.filter(r => !r.error).length
+    }
+  }, [state, loadAccountData])
+
+  // Place TWAP order (scheduled orders)
+  const placeTwapOrder = useCallback(async () => {
+    const runningTimeHours = parseInt(state.twapRunningTimeHours)
+    const runningTimeMinutes = parseInt(state.twapRunningTimeMinutes)
+    const numberOfIntervals = parseInt(state.twapNumberOfIntervals)
+    const totalSize = parseFloat(state.size)
+    const priceOffset = parseFloat(state.twapPriceOffset)
+
+    // Calculate total running time in minutes
+    const totalRunningTimeMinutes = (runningTimeHours * 60) + runningTimeMinutes
+    const intervalDuration = totalRunningTimeMinutes / numberOfIntervals
+
+    // Validate TWAP order parameters
+    if (isNaN(runningTimeHours) || isNaN(runningTimeMinutes) || isNaN(numberOfIntervals) || isNaN(totalSize) || isNaN(priceOffset)) {
+      setError('Please enter valid TWAP order parameters')
+      return
+    }
+
+    if (totalRunningTimeMinutes < 5 || totalRunningTimeMinutes > 1440) {
+      setError('Running time must be between 5 minutes and 24 hours')
+      return
+    }
+
+    if (numberOfIntervals <= 0 || totalSize <= 0) {
+      setError('Number of intervals and total size must be positive')
+      return
+    }
+
+    const subOrderSize = totalSize / numberOfIntervals
+    const results = []
+    const startTime = Date.now()
+
+    // Place the first order immediately
+    try {
+      const firstOrderParams: OrderParams = {
+        coin: state.selectedCoin,
+        is_buy: state.side === 'buy',
+        sz: subOrderSize.toFixed(4),
+        reduce_only: state.reduceOnly,
+        order_type: state.twapOrderType === 'market' ? getOrderType('market') : getOrderType('limit')
+      }
+
+      // Add price offset for limit orders
+      if (state.twapOrderType === 'limit') {
+        // This would need current market price to calculate offset
+        // For now, we'll use a placeholder
+        firstOrderParams.limit_px = '100000' // Placeholder - would need real market price
+      }
+
+      const firstResult = await hyperliquidService.placeOrder(firstOrderParams)
+      results.push({ 
+        order: 1, 
+        result: firstResult, 
+        size: subOrderSize.toFixed(4),
+        scheduledTime: new Date(startTime).toISOString(),
+        executedTime: new Date().toISOString()
+      })
+      console.log(`TWAP order 1 placed immediately: ${subOrderSize.toFixed(4)}`)
+    } catch (err) {
+      console.error(`Failed to place TWAP order 1:`, err)
+      results.push({ 
+        order: 1, 
+        error: err, 
+        size: subOrderSize.toFixed(4),
+        scheduledTime: new Date(startTime).toISOString()
+      })
+    }
+
+    // Schedule remaining orders
+    for (let i = 1; i < numberOfIntervals; i++) {
+      const scheduledTime = startTime + (i * intervalDuration * 60 * 1000) // Convert minutes to milliseconds
+      const delay = scheduledTime - Date.now()
+      
+      if (delay > 0) {
+        setTimeout(async () => {
+          try {
+            const orderParams: OrderParams = {
+              coin: state.selectedCoin,
+              is_buy: state.side === 'buy',
+              sz: subOrderSize.toFixed(4),
+              reduce_only: state.reduceOnly,
+              order_type: state.twapOrderType === 'market' ? getOrderType('market') : getOrderType('limit')
+            }
+
+            // Add price offset for limit orders
+            if (state.twapOrderType === 'limit') {
+              orderParams.limit_px = '100000' // Placeholder - would need real market price
+            }
+
+            await hyperliquidService.placeOrder(orderParams)
+            console.log(`TWAP order ${i + 1} placed: ${subOrderSize.toFixed(4)}`)
+          } catch (err) {
+            console.error(`Failed to place TWAP order ${i + 1}:`, err)
+          }
+        }, delay)
+      }
+    }
+
+    // Reload account data after first order
+    await loadAccountData()
+    
+    return {
+      type: 'twap',
+      results,
+      totalOrders: numberOfIntervals,
+      successfulOrders: results.filter(r => !r.error).length,
+      totalDuration: totalRunningTimeMinutes,
+      intervalDuration,
+      subOrderSize: subOrderSize.toFixed(4)
     }
   }, [state, loadAccountData])
 
@@ -302,6 +515,36 @@ export const useTrading = () => {
     }
   }, [])
 
+  // Get position for a specific coin
+  const getPositionForCoin = useCallback(async (coin: string) => {
+    try {
+      const clearinghouseState = await hyperliquidService.getClearinghouseState()
+      if (clearinghouseState?.assetPositions) {
+        // Find position for the specific coin
+        const coinPosition = clearinghouseState.assetPositions.find(
+          (pos: any) => pos.position?.coin === coin
+        )
+        
+        if (coinPosition?.position) {
+          const position = coinPosition.position
+          const size = parseFloat(position.szi || '0')
+          const coinName = position.coin || coin
+          
+          if (size === 0) {
+            return `0.00000 ${coinName}`
+          } else {
+            const side = size > 0 ? 'Long' : 'Short'
+            return `${Math.abs(size).toFixed(5)} ${coinName} (${side})`
+          }
+        }
+      }
+      return `0.00000 ${coin}`
+    } catch (error) {
+      console.error('Failed to get position for coin:', error)
+      return `0.00000 ${coin}`
+    }
+  }, [])
+
   // Initialize on mount
   useEffect(() => {
     initializeSDK()
@@ -320,6 +563,7 @@ export const useTrading = () => {
     cancelAllOrders,
     loadAccountData,
     switchNetwork,
-    getNetworkStatus
+    getNetworkStatus,
+    getPositionForCoin
   }
 }
