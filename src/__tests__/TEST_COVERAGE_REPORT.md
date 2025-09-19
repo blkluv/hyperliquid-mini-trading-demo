@@ -1,125 +1,125 @@
-# 测试覆盖报告
+# Test Coverage Report
 
-## 已测试的具体测试用例
+## Tested Specific Test Cases
 
-### ✅ 市场订单测试用例
+### ✅ Market Order Test Cases
 
-| 测试用例 | 状态 | 描述 |
-|---------|------|------|
-| `Submit market order without price` | ✅ 已测试 | 验证市场订单不需要价格参数 |
-| `Submit market order but sneak in price` | ✅ 已测试 | 验证市场订单包含价格时显示警告 |
+| Test Case | Status | Description |
+|-----------|--------|-------------|
+| `Submit market order without price` | ✅ Tested | Validates market orders don't require price parameters |
+| `Submit market order but sneak in price` | ✅ Tested | Validates warnings when market orders include price |
 
-### ✅ 限价订单测试用例
+### ✅ Limit Order Test Cases
 
-| 测试用例 | 状态 | 描述 |
-|---------|------|------|
-| `Submit limit order with perfect tick alignment` | ✅ 已测试 | 验证价格完全符合tick size要求 |
-| `Submit limit order with price off tick size` | ✅ 已测试 | 验证价格不符合tick size时返回错误 |
-| `Submit limit order but forget the price` | ✅ 已测试 | 验证缺少价格参数时返回错误 |
+| Test Case | Status | Description |
+|-----------|--------|-------------|
+| `Submit limit order with perfect tick alignment` | ✅ Tested | Validates prices perfectly aligned with tick size requirements |
+| `Submit limit order with price off tick size` | ✅ Tested | Validates errors when prices don't match tick size |
+| `Submit limit order but forget the price` | ✅ Tested | Validates errors when price parameters are missing |
 
-### ✅ 批量订单测试用例
+### ✅ Scale Order Test Cases
 
-| 测试用例 | 状态 | 描述 |
-|---------|------|------|
-| `Submit scale order with valid range` | ✅ 已测试 | 验证有效的价格范围 |
-| `Submit scale order with reversed range` | ✅ 已测试 | 验证价格范围颠倒时返回错误 |
-| `Submit scale order but forget slices` | ✅ 已测试 | 验证缺少slices参数时返回错误 |
-| `Submit scale order with minPrice not divisible` | ✅ 已测试 | 验证minPrice不符合tick size时返回错误 |
+| Test Case | Status | Description |
+|-----------|--------|-------------|
+| `Submit scale order with valid range` | ✅ Tested | Validates valid price ranges |
+| `Submit scale order with reversed range` | ✅ Tested | Validates errors when price ranges are reversed |
+| `Submit scale order but forget slices` | ✅ Tested | Validates errors when slices parameter is missing |
+| `Submit scale order with minPrice not divisible` | ✅ Tested | Validates errors when minPrice doesn't match tick size |
 
-### ✅ TWAP订单测试用例
+### ✅ TWAP Order Test Cases
 
-| 测试用例 | 状态 | 描述 |
-|---------|------|------|
-| `Submit twap order with correct tick` | ✅ 已测试 | 验证价格符合tick size要求 |
-| `Submit twap order with price off tick` | ✅ 已测试 | 验证价格不符合tick size时返回错误 |
-| `Submit twap order without interval` | ✅ 已测试 | 验证缺少interval参数时返回错误 |
-| `Submit twap order with missing price` | ✅ 已测试 | 验证缺少价格参数时返回错误 |
+| Test Case | Status | Description |
+|-----------|--------|-------------|
+| `Submit twap order with correct tick` | ✅ Tested | Validates prices aligned with tick size requirements |
+| `Submit twap order with price off tick` | ✅ Tested | Validates errors when prices don't match tick size |
+| `Submit twap order without interval` | ✅ Tested | Validates errors when interval parameter is missing |
+| `Submit twap order with missing price` | ✅ Tested | Validates errors when price parameters are missing |
 
-### ✅ 通用订单测试用例
+### ✅ General Order Test Cases
 
-| 测试用例 | 状态 | 描述 |
-|---------|------|------|
-| `Submit unknown order type` | ✅ 已测试 | 验证未知订单类型时返回错误 |
-| `Submit order without coin` | ✅ 已测试 | 验证缺少coin参数时返回错误 |
-| `Submit order with negative size` | ✅ 已测试 | 验证负数size时返回错误 |
+| Test Case | Status | Description |
+|-----------|--------|-------------|
+| `Submit unknown order type` | ✅ Tested | Validates errors for unknown order types |
+| `Submit order without coin` | ✅ Tested | Validates errors when coin parameter is missing |
+| `Submit order with negative size` | ✅ Tested | Validates errors for negative size values |
 
-## 测试文件结构
+## Test File Structure
 
-### 1. `specificOrderCases.test.ts` - 具体测试用例
-- **19个测试用例** - 覆盖所有指定的具体测试场景
-- 专注于边界情况和错误处理
-- 包含浮点数精度处理
+### 1. `specificOrderCases.test.ts` - Specific Test Cases
+- **19 test cases** - Covers all specified specific test scenarios
+- Focuses on boundary conditions and error handling
+- Includes floating-point precision handling
 
-### 2. `tradingParams.test.ts` - 交易参数测试
-- **26个测试用例** - 覆盖参数收集和转换逻辑
-- 测试USD到coin size转换
-- 测试币种特定四舍五入
+### 2. `tradingParams.test.ts` - Trading Parameter Tests
+- **26 test cases** - Covers parameter collection and conversion logic
+- Tests USD to coin size conversion
+- Tests coin-specific rounding
 
-### 3. `orderValidation.test.ts` - 订单验证测试
-- **19个测试用例** - 覆盖订单验证逻辑
-- 测试不同订单类型的验证规则
-- 测试边界值和错误处理
+### 3. `orderValidation.test.ts` - Order Validation Tests
+- **19 test cases** - Covers order validation logic
+- Tests validation rules for different order types
+- Tests boundary values and error handling
 
-### 4. `tradingFormData.test.ts` - 表单数据测试
-- **18个测试用例** - 覆盖表单数据处理
-- 测试表单数据到交易参数转换
-- 测试表单验证规则
+### 4. `tradingFormData.test.ts` - Form Data Tests
+- **18 test cases** - Covers form data processing
+- Tests form data to trading parameter conversion
+- Tests form validation rules
 
-## 测试覆盖的功能
+## Test Coverage
 
-### 订单类型验证
-- ✅ 市场订单验证
-- ✅ 限价订单验证
-- ✅ 批量订单验证
-- ✅ TWAP订单验证
+### Order Type Validation
+- ✅ Market order validation
+- ✅ Limit order validation
+- ✅ Scale order validation
+- ✅ TWAP order validation
 
-### 参数验证
-- ✅ 必填参数验证
-- ✅ 数据类型验证
-- ✅ 数值范围验证
-- ✅ Tick size对齐验证
+### Parameter Validation
+- ✅ Required parameter validation
+- ✅ Data type validation
+- ✅ Value range validation
+- ✅ Tick size alignment validation
 
-### 错误处理
-- ✅ 缺少必填参数
-- ✅ 无效参数值
-- ✅ 参数类型错误
-- ✅ 边界值处理
+### Error Handling
+- ✅ Missing required parameters
+- ✅ Invalid parameter values
+- ✅ Parameter type errors
+- ✅ Boundary value handling
 
-### 特殊功能
-- ✅ USD到coin size转换
-- ✅ 币种特定四舍五入
-- ✅ 浮点数精度处理
-- ✅ Tick size对齐检查
+### Special Features
+- ✅ USD to coin size conversion
+- ✅ Coin-specific rounding
+- ✅ Floating-point precision handling
+- ✅ Tick size alignment checks
 
-## 测试统计
+## Test Statistics
 
-- **总测试文件**: 4个
-- **总测试用例**: 82个
-- **通过率**: 100%
-- **失败测试**: 0个
+- **Total test files**: 4
+- **Total test cases**: 82
+- **Pass rate**: 100%
+- **Failed tests**: 0
 
-## 运行测试
+## Running Tests
 
 ```bash
-# 运行所有测试
+# Run all tests
 npm run test
 
-# 运行特定测试文件
+# Run specific test file
 npm run test specificOrderCases.test.ts
 
-# 运行测试并生成覆盖率报告
+# Run tests and generate coverage report
 npm run test:coverage
 
-# 在UI模式下运行测试
+# Run tests in UI mode
 npm run test:ui
 ```
 
-## 结论
+## Conclusion
 
-所有指定的测试用例都已被覆盖，包括：
-- 所有订单类型的验证
-- 所有边界情况处理
-- 所有错误场景测试
-- 所有特殊功能验证
+All specified test cases have been covered, including:
+- All order type validations
+- All boundary condition handling
+- All error scenario tests
+- All special feature validations
 
-测试套件确保了交易参数收集和验证逻辑的完整性和正确性。
+The test suite ensures the completeness and correctness of trading parameter collection and validation logic.

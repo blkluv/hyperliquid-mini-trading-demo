@@ -1,71 +1,71 @@
 # Trading Parameters Unit Tests
 
-这些单元测试专注于验证交易参数收集和验证逻辑，不涉及UI/元素测试。
+These unit tests focus on validating trading parameter collection and validation logic, without involving UI/element testing.
 
-## 测试文件说明
+## Test File Description
 
 ### 1. `tradingParams.test.ts`
-- 测试交易参数收集和验证的核心逻辑
-- 验证不同订单类型的参数处理
-- 测试USD到coin size的转换
-- 验证币种特定的四舍五入规则
+- Tests core logic for trading parameter collection and validation
+- Validates parameter handling for different order types
+- Tests USD to coin size conversion
+- Validates coin-specific rounding rules
 
 ### 2. `orderValidation.test.ts`
-- 测试订单参数验证逻辑
-- 验证市场订单、限价订单、批量订单、TWAP订单的验证规则
-- 测试边界情况和错误处理
+- Tests order parameter validation logic
+- Validates market orders, limit orders, scale orders, TWAP orders validation rules
+- Tests boundary conditions and error handling
 
 ### 3. `tradingFormData.test.ts`
-- 测试表单数据处理逻辑
-- 验证表单数据到交易参数的转换
-- 测试表单验证规则
+- Tests form data processing logic
+- Validates form data to trading parameter conversion
+- Tests form validation rules
 
-## 运行测试
+## Running Tests
 
 ```bash
-# 安装测试依赖
+# Install test dependencies
 npm install --save-dev vitest @vitest/ui jsdom
 
-# 运行所有测试
+# Run all tests
 npm run test
 
-# 运行特定测试文件
+# Run specific test file
 npm run test tradingParams.test.ts
 
-# 运行测试并生成覆盖率报告
+# Run tests and generate coverage report
 npm run test:coverage
 
-# 在UI模式下运行测试
+# Run tests in UI mode
 npm run test:ui
 ```
 
-## 测试覆盖的功能
+## Test Coverage
 
-### 参数收集
-- ✅ 市场订单参数收集
-- ✅ 限价订单参数收集
-- ✅ 批量订单参数收集
-- ✅ TWAP订单参数收集
+### Parameter Collection
+- ✅ Market order parameter collection
+- ✅ Limit order parameter collection
+- ✅ Scale order parameter collection
+- ✅ TWAP order parameter collection
 
-### 参数验证
-- ✅ 基本参数验证（币种、方向、大小、杠杆）
-- ✅ 订单类型特定验证
-- ✅ 边界值验证
-- ✅ 错误消息验证
+### Parameter Validation
+- ✅ Basic parameter validation (coin, side, size, leverage)
+- ✅ Order type specific validation
+- ✅ Boundary value validation
+- ✅ Error message validation
 
-### 大小转换
-- ✅ USD到coin size转换
-- ✅ 币种特定四舍五入
-- ✅ 边界情况处理
+### Size Conversion
+- ✅ USD to coin size conversion
+- ✅ Coin-specific rounding
+- ✅ Boundary condition handling
 
-### 表单数据处理
-- ✅ 表单数据到交易参数转换
-- ✅ 表单验证规则
-- ✅ 错误处理
+### Form Data Processing
+- ✅ Form data to trading parameter conversion
+- ✅ Form validation rules
+- ✅ Error handling
 
-## 测试用例示例
+## Test Case Examples
 
-### 市场订单验证
+### Market Order Validation
 ```typescript
 it('should validate valid market order', () => {
   const params = {
@@ -82,7 +82,7 @@ it('should validate valid market order', () => {
 })
 ```
 
-### 批量订单验证
+### Scale Order Validation
 ```typescript
 it('should validate scale order parameters', () => {
   const params = {
@@ -102,7 +102,7 @@ it('should validate scale order parameters', () => {
 })
 ```
 
-### 大小转换测试
+### Size Conversion Test
 ```typescript
 it('should convert USD to coin units correctly', () => {
   const result = TradingFormProcessor.convertSizeToCoinUnits('100', 'USD', 50000)
@@ -110,10 +110,10 @@ it('should convert USD to coin units correctly', () => {
 })
 ```
 
-## 注意事项
+## Notes
 
-1. 这些测试不涉及UI组件，专注于业务逻辑
-2. 测试覆盖了所有订单类型的参数处理
-3. 包含了边界情况和错误处理测试
-4. 验证了USD到coin size的转换逻辑
-5. 测试了币种特定的四舍五入规则
+1. These tests do not involve UI components, focusing on business logic
+2. Tests cover parameter handling for all order types
+3. Includes boundary conditions and error handling tests
+4. Validates USD to coin size conversion logic
+5. Tests coin-specific rounding rules

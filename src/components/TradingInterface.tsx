@@ -259,15 +259,22 @@ const TradingInterface: React.FC = () => {
   }
 
   // Helper function to calculate liquidation price
-  const calculateLiquidationPrice = (entryPrice: number, leverage: number, side: 'buy' | 'sell', coin: string = 'BTC') => {
-    // Different maintenance margins for different assets (typical values)
+  const calculateLiquidationPrice = (
+    entryPrice: number,
+    leverage: number,
+    side: 'buy' | 'sell',
+    coin: string = 'BTC',
+    marginMode: 'isolated' | 'cross' = 'isolated',
+    walletBalance: number = 0 // for cross margin
+  ) => {
+    // realistic small maintenance margin ratios (exchange-style)
     const maintenanceMargins: { [key: string]: number } = {
-      'BTC': 0.04,  // 4% for BTC
-      'ETH': 0.05,  // 5% for ETH
-      'SOL': 0.06,  // 6% for SOL
-      'default': 0.05 // 5% default
+      'BTC': 0.004,   // 0.4%
+      'ETH': 0.005,   // 0.5%
+      'SOL': 0.01,    // 1%
+      'default': 0.005
     }
-    
+
     const maintenanceMargin = maintenanceMargins[coin] || maintenanceMargins.default
     
     if (side === 'buy') {
@@ -1141,16 +1148,63 @@ const TradingInterface: React.FC = () => {
       size: state.sizeUnit === 'USD' 
         ? `${convertedSize || state.size} ${state.selectedCoin}` 
         : `${state.size} ${state.selectedCoin}`,
-      price: state.orderType === 'market' ? 'Market' : state.limitPrice,
+      price: (() => {
+        if (state.orderType === 'market') {
+          // For market orders, show current market price if available
+          return topCardPrice ? `$${topCardPrice.toFixed(2)} (Market)` : 'Market'
+        } else if (state.orderType === 'twap') {
+          // For TWAP orders, show current market price
+          return topCardPrice ? `$${topCardPrice.toFixed(2)} (Market)` : 'Market'
+        } else if (state.orderType === 'scale') {
+          // For scale orders, show start and end prices
+          const startPrice = state.scaleStartPrice && state.scaleStartPrice.trim() !== '' ? state.scaleStartPrice : 'N/A'
+          const endPrice = state.scaleEndPrice && state.scaleEndPrice.trim() !== '' ? state.scaleEndPrice : 'N/A'
+          return `${startPrice} - ${endPrice}`
+        } else {
+          // For limit orders, show the limit price or N/A if missing
+          return state.limitPrice && state.limitPrice.trim() !== '' ? state.limitPrice : 'N/A'
+        }
+      })(),
       liquidationPrice: (() => {
-        if (state.size && typeof topCardPrice === 'number') {
-          const entryPrice = state.orderType === 'limit' && state.limitPrice 
-            ? parseFloat(state.limitPrice) 
-            : topCardPrice
-          const leverage = state.leverage
-          const liquidationPrice = calculateLiquidationPrice(entryPrice, leverage, state.side, state.selectedCoin)
+        // Check if we have the required data for liquidation price calculation
+        if (!state.size || state.size.trim() === '') {
+          return 'N/A'
+        }
+        
+        // Determine entry price for calculation
+        let entryPrice: number | null = null
+        
+        if (state.orderType === 'limit' && state.limitPrice && state.limitPrice.trim() !== '') {
+          const limitPrice = parseFloat(state.limitPrice)
+          if (!isNaN(limitPrice) && limitPrice > 0) {
+            entryPrice = limitPrice
+          }
+        }
+        
+        // If no valid limit price, use market price
+        if (!entryPrice && typeof topCardPrice === 'number' && topCardPrice > 0) {
+          entryPrice = topCardPrice
+        }
+        
+        // If we have a valid entry price, calculate liquidation price
+        if (entryPrice && state.leverage > 0) {
+          const liquidationPrice = calculateLiquidationPrice(
+            entryPrice, 
+            state.leverage, 
+            state.side, 
+            state.selectedCoin, 
+            state.marginMode, 
+            parseFloat(accountInfo.availableToTrade || '0')
+          )
+          
+          // Handle negative liquidation price (very safe position in cross margin)
+          if (liquidationPrice < 0) {
+            return `Very Safe (${liquidationPrice.toFixed(2)})`
+          }
+          
           return `$${liquidationPrice.toFixed(2)}`
         }
+        
         return 'N/A'
       })(),
       convertedSize,
@@ -1837,59 +1891,7 @@ const TradingInterface: React.FC = () => {
           </div>
         ) : state.orderType === 'scale' ? (
           <div className="mb-2 space-y-3">
-            {/* Size Input with Dropdown */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-400">Size</span>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={state.size}
-                    onChange={(e) => setState(prev => ({ ...prev, size: e.target.value }))}
-                    className="w-32 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white text-right focus:outline-none focus:border-teal-primary"
-                    placeholder="100"
-                  />
-                  <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex items-center gap-1">
-                    <span className="text-sm text-gray-300">{state.sizeUnit}</span>
-                    <ChevronDown size={12} className="text-gray-400" />
-                  </div>
-                </div>
-              </div>
-              
-              {/* Size Slider */}
-              <div className="flex items-center gap-3">
-                <div className="flex-1">
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={state.sizePercentage}
-                    onChange={(e) => {
-                      const percentage = parseInt(e.target.value)
-                      setState(prev => ({ ...prev, sizePercentage: percentage }))
-                      if (typeof topCardPrice === 'number' && accountInfo.availableToTrade) {
-                        const availableBalance = parseFloat(accountInfo.availableToTrade)
-                        const sizeValue = (availableBalance * percentage / 100) / topCardPrice
-                        setState(prev => ({ ...prev, size: sizeValue.toFixed(2) }))
-                      }
-                    }}
-                    className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer slider"
-                  />
-                </div>
-                <div className="w-16">
-                  <input
-                    type="text"
-                    value={`${state.sizePercentage}%`}
-                    onChange={(e) => {
-                      const value = e.target.value.replace('%', '')
-                      const percentage = parseInt(value) || 0
-                      setState(prev => ({ ...prev, sizePercentage: Math.min(100, Math.max(0, percentage)) }))
-                    }}
-                    className="w-full px-2 py-1 bg-dark-border border border-gray-600 rounded text-white text-center text-sm focus:outline-none focus:border-teal-primary"
-                  />
-                </div>
-              </div>
-            </div>
+            
 
             {/* Scale Order Configuration */}
             <div className="space-y-2">
@@ -1900,7 +1902,7 @@ const TradingInterface: React.FC = () => {
                   value={state.scaleStartPrice}
                   onChange={(e) => setState(prev => ({ ...prev, scaleStartPrice: e.target.value }))}
                   className="w-32 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white text-right focus:outline-none focus:border-teal-primary"
-                  placeholder="0.28"
+                  placeholder="0"
                 />
               </div>
               
@@ -1911,7 +1913,7 @@ const TradingInterface: React.FC = () => {
                   value={state.scaleEndPrice}
                   onChange={(e) => setState(prev => ({ ...prev, scaleEndPrice: e.target.value }))}
                   className="w-32 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white text-right focus:outline-none focus:border-teal-primary"
-                  placeholder="0.3"
+                  placeholder="0"
                 />
               </div>
               
@@ -1922,7 +1924,7 @@ const TradingInterface: React.FC = () => {
                   value={state.scaleOrderCount}
                   onChange={(e) => setState(prev => ({ ...prev, scaleOrderCount: e.target.value }))}
                   className="w-32 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white text-right focus:outline-none focus:border-teal-primary"
-                  placeholder="2"
+                  placeholder="10"
                 />
               </div>
               
@@ -2241,7 +2243,7 @@ const TradingInterface: React.FC = () => {
                   {priceError ? (
                     <span className="text-red-400 text-sm">Error</span>
                   ) : typeof topCardPrice === 'number' ? (
-                    `$${topCardPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    `$${topCardPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 5 })}`
                   ) : priceConnected ? (
                     <span className="text-gray-400 text-sm">Loading...</span>
                   ) : (
@@ -2331,47 +2333,34 @@ const TradingInterface: React.FC = () => {
             </div>
           </div>
         )}
+      
         
-        {/* Size Percentage Slider */}
-        <div className="space-y-2">
-          <div className="flex justify-between text-xs text-gray-400">
-            <span>0%</span>
-            <span>{state.sizePercentage}%</span>
-            <span>100%</span>
-          </div>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            value={state.sizePercentage}
-            onChange={(e) => handleSizePercentageChange(Number(e.target.value))}
-            className="w-full h-2 bg-dark-border rounded-lg appearance-none cursor-pointer slider"
-          />
-        </div>
       </div>
 
-      {/* Order Options */}
-      <div className="mb-6 space-y-3">
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={state.reduceOnly}
-            onChange={(e) => setState(prev => ({ ...prev, reduceOnly: e.target.checked }))}
-            className="w-4 h-4 text-teal-primary bg-dark-border border-gray-600 rounded focus:ring-teal-primary"
-          />
-          <span className="text-gray-300">Reduce Only</span>
-        </label>
-        
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={state.takeProfitStopLoss}
-            onChange={(e) => setState(prev => ({ ...prev, takeProfitStopLoss: e.target.checked }))}
-            className="w-4 h-4 text-teal-primary bg-dark-border border-gray-600 rounded focus:ring-teal-primary"
-          />
-          <span className="text-gray-300">Take Profit / Stop Loss</span>
-        </label>
-      </div>
+      {/* Order Options - Hidden for Scale and TWAP Orders */}
+      {state.orderType !== 'scale' && state.orderType !== 'twap' && (
+        <div className="mb-6 space-y-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={state.reduceOnly}
+              onChange={(e) => setState(prev => ({ ...prev, reduceOnly: e.target.checked }))}
+              className="w-4 h-4 text-teal-primary bg-dark-border border-gray-600 rounded focus:ring-teal-primary"
+            />
+            <span className="text-gray-300">Reduce Only</span>
+          </label>
+          
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={state.takeProfitStopLoss}
+              onChange={(e) => setState(prev => ({ ...prev, takeProfitStopLoss: e.target.checked }))}
+              className="w-4 h-4 text-teal-primary bg-dark-border border-gray-600 rounded focus:ring-teal-primary"
+            />
+            <span className="text-gray-300">Take Profit / Stop Loss</span>
+          </label>
+        </div>
+      )}
 
       {/* Validation Issues Display */}
       {validationErrors.length > 0 && (
@@ -2626,7 +2615,13 @@ const TradingInterface: React.FC = () => {
                       : topCardPrice // Use current price for market orders
                     const leverage = state.leverage
                     
-                    const liquidationPrice = calculateLiquidationPrice(entryPrice, leverage, state.side, state.selectedCoin)
+                    const liquidationPrice = calculateLiquidationPrice(entryPrice, leverage, state.side, state.selectedCoin, state.marginMode, parseFloat(accountInfo.availableToTrade || '0'))
+                    
+                    // Handle negative liquidation price (very safe position in cross margin)
+                    if (liquidationPrice < 0) {
+                      return `Very Safe (${liquidationPrice.toFixed(2)})`
+                    }
+                    
                     return `$${liquidationPrice.toFixed(2)}`
                   }
                   return 'N/A'
@@ -2727,7 +2722,35 @@ const TradingInterface: React.FC = () => {
               
               <div className="flex justify-between">
                 <span className="text-gray-400">Price:</span>
-                <span className="text-white font-medium">{pendingOrder.price}</span>
+                <span className="text-white font-medium">
+                  {(() => {
+                    // Handle different order types
+                    if (pendingOrder.orderType === 'twap') {
+                      // For TWAP orders, show market price
+                      return topCardPrice ? `$${topCardPrice.toFixed(2)} (Market)` : 'Market'
+                    } else if (pendingOrder.orderType === 'scale') {
+                      // For scale orders, show start and end prices
+                      const startPrice = state.scaleStartPrice && state.scaleStartPrice.trim() !== '' ? state.scaleStartPrice : 'N/A'
+                      const endPrice = state.scaleEndPrice && state.scaleEndPrice.trim() !== '' ? state.scaleEndPrice : 'N/A'
+                      return `${startPrice} - ${endPrice}`
+                    } else {
+                      // For market and limit orders, use the existing logic
+                      if (!pendingOrder.price || pendingOrder.price === 'Market' || pendingOrder.price === '') {
+                        // For market orders, show current market price if available
+                        if (pendingOrder.orderType === 'market' && topCardPrice) {
+                          return `$${topCardPrice.toFixed(2)} (Market)`
+                        }
+                        // For limit orders without price, show N/A
+                        if (pendingOrder.orderType === 'limit' && (!pendingOrder.price || pendingOrder.price === '')) {
+                          return 'N/A'
+                        }
+                        // Default fallback
+                        return pendingOrder.price || 'N/A'
+                      }
+                      return pendingOrder.price
+                    }
+                  })()}
+                </span>
               </div>
               
               <div className="flex justify-between">
@@ -2762,22 +2785,6 @@ const TradingInterface: React.FC = () => {
               )}
             </div>
             
-            {/* TP/SL Trigger Orders Info */}
-            {pendingOrder.takeProfitStopLoss && (pendingOrder.takeProfitPrice || pendingOrder.stopLossPrice) && (
-              <div className="mt-4 p-3 bg-blue-900/20 border border-blue-600 rounded">
-                <div className="text-sm text-blue-400 mb-2">📋 Additional Trigger Orders:</div>
-                <div className="text-xs text-gray-300 space-y-1">
-                  <div>• TP/SL orders will be placed as separate trigger orders after the main order</div>
-                  <div>• Each trigger order will be reduce-only and opposite side of main order</div>
-                  {pendingOrder.takeProfitPrice && (
-                    <div>• Take Profit: ${pendingOrder.takeProfitPrice} (limit order)</div>
-                  )}
-                  {pendingOrder.stopLossPrice && (
-                    <div>• Stop Loss: ${pendingOrder.stopLossPrice} (market order)</div>
-                  )}
-                </div>
-              </div>
-            )}
 
             {/* Order Payload */}
             <div className="mt-4 p-3 bg-gray-800/50 border border-gray-600 rounded">

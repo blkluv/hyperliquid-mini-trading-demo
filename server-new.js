@@ -76,11 +76,10 @@ const fetchPrices = async () => {
     if (mids && meta && meta.universe) {
       // Create a mapping from asset ID to asset name
       const assetIdToName = {}
-      meta.universe.forEach(asset => {
+      meta.universe.forEach((asset, index) => {
         if (asset.name) {
-          // Find the asset ID for this name
-          const assetId = getAssetId(`${asset.name}-PERP`)
-          assetIdToName[assetId] = asset.name
+          // Use the index as the asset ID (from API)
+          assetIdToName[index] = asset.name
         }
       })
       
@@ -188,6 +187,8 @@ app.get('/api/prices', async (req, res) => {
       return res.status(503).json({ error: 'SDK not initialized' })
     }
     
+    console.log('📊 Current prices debug:', JSON.stringify(latestPrices, null, 2))
+    
     res.json({
       prices: latestPrices,
       network: getNetworkName(),
@@ -195,6 +196,39 @@ app.get('/api/prices', async (req, res) => {
     })
   } catch (error) {
     console.error('❌ Failed to fetch prices:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Get asset ID mapping endpoint
+app.get('/api/asset-ids', async (req, res) => {
+  try {
+    if (!infoClient) {
+      return res.status(503).json({ error: 'SDK not initialized' })
+    }
+    
+    // Force refresh of asset ID cache
+    const meta = await infoClient.meta()
+    const assetIdMapping = {}
+    
+    if (meta && meta.universe) {
+      meta.universe.forEach((asset, index) => {
+        if (asset.name) {
+          assetIdMapping[asset.name] = index
+          assetIdMapping[`${asset.name}-PERP`] = index
+        }
+      })
+    }
+    
+    res.json({
+      assetIds: assetIdMapping,
+      cacheTimestamp: assetIdCacheTimestamp,
+      cacheAge: Date.now() - assetIdCacheTimestamp,
+      network: getNetworkName(),
+      timestamp: Date.now()
+    })
+  } catch (error) {
+    console.error('❌ Failed to fetch asset IDs:', error)
     res.status(500).json({ error: error.message })
   }
 })
@@ -346,6 +380,51 @@ app.post('/api/place-order', async (req, res) => {
     const orderData = req.body
     console.log('📝 Placing order:', JSON.stringify(orderData, null, 2))
     
+    // Validate order price against market price (80% limit)
+    if (orderData.limit_px && orderData.coin) {
+      const currentPrice = latestPrices[orderData.coin]?.price
+      console.log(`🔍 Price validation debug for ${orderData.coin}:`)
+      console.log(`  - Order price: ${orderData.limit_px}`)
+      console.log(`  - Current market price: ${currentPrice}`)
+      console.log(`  - Available prices:`, Object.keys(latestPrices))
+      console.log(`  - Latest prices object:`, JSON.stringify(latestPrices, null, 2))
+      
+      if (currentPrice) {
+        const orderPrice = parseFloat(orderData.limit_px)
+        const marketPrice = parseFloat(currentPrice)
+        const priceDeviation = Math.abs(orderPrice - marketPrice) / marketPrice
+        
+        console.log(`  - Price deviation: ${(priceDeviation * 100).toFixed(1)}%`)
+        console.log(`  - 80% limit check: ${priceDeviation > 0.8 ? 'FAILED' : 'PASSED'}`)
+        
+        if (priceDeviation > 0.8) { // 80% limit
+          const errorMessage = `Order price ${orderPrice} deviates ${(priceDeviation * 100).toFixed(1)}% from market price ${marketPrice}. Maximum allowed deviation is 80%.`
+          console.log('❌ Price validation failed:', errorMessage)
+          
+          // Suggest better price within 80% limit
+          const suggestedPrice = orderPrice > marketPrice 
+            ? marketPrice * 1.8  // 80% above market for buy orders
+            : marketPrice * 0.2   // 80% below market for sell orders
+          
+          return res.status(400).json({ 
+            error: 'Order price cannot be more than 80% away from the reference price',
+            details: errorMessage,
+            orderPrice,
+            marketPrice,
+            deviation: priceDeviation,
+            suggestedPrice: suggestedPrice.toFixed(2),
+            suggestion: `Try using a price around $${suggestedPrice.toFixed(2)} (within 80% of market price $${marketPrice})`
+          })
+        }
+        
+        console.log(`✅ Price validation passed: ${orderPrice} vs ${marketPrice} (${(priceDeviation * 100).toFixed(1)}% deviation)`)
+      } else {
+        console.log(`⚠️ No current price available for ${orderData.coin}, skipping price validation`)
+      }
+    } else {
+      console.log(`⚠️ Price validation skipped - limit_px: ${orderData.limit_px}, coin: ${orderData.coin}`)
+    }
+    
     let orders = []
     let grouping = 'na'
     
@@ -387,7 +466,7 @@ app.post('/api/place-order', async (req, res) => {
         }
         
         return {
-          a: getAssetId(order.coin),
+          a: await getAssetId(order.coin),
           b: order.is_buy,
           p: price,
           r: order.reduce_only || false,
@@ -435,7 +514,7 @@ app.post('/api/place-order', async (req, res) => {
       }
       
     const hyperliquidOrder = {
-        a: getAssetId(orderData.coin),
+        a: await getAssetId(orderData.coin),
         b: orderData.is_buy,
         p: price,
         r: orderData.reduce_only || false,
@@ -461,21 +540,21 @@ app.post('/api/place-order', async (req, res) => {
     // Provide user-friendly error messages
     let userMessage = error.message
     if (error.message.includes('Order price cannot be more than 80% away from the reference price')) {
-      userMessage = '订单价格偏离市场价格超过80%限制。请调整价格使其更接近当前市场价格。'
+      userMessage = 'Order price deviates more than 80% from market price. Please adjust the price to be closer to the current market price.'
     } else if (error.message.includes('Order has invalid price')) {
-      userMessage = '订单价格无效。请检查价格格式和精度。'
+      userMessage = 'Invalid order price. Please check the price format and precision.'
     } else if (error.message.includes('Order value too large')) {
-      userMessage = '订单价值过大。请减少订单数量或价格。'
+      userMessage = 'Order value is too large. Please reduce the order quantity or price.'
     } else if (error.message.includes('Insufficient balance')) {
-      userMessage = '账户余额不足。请检查可用资金。'
+      userMessage = 'Insufficient account balance. Please check available funds.'
     }
     
     res.status(500).json({ 
       error: userMessage,
       originalError: error.message,
       suggestion: error.message.includes('80% away') 
-        ? '建议：调整订单价格使其更接近当前市场价格' 
-        : '建议：检查订单参数和账户状态'
+        ? 'Suggestion: Adjust order price to be closer to current market price' 
+        : 'Suggestion: Check order parameters and account status'
     })
   }
 })
@@ -742,16 +821,16 @@ app.get('/api/leverage-status/:address', async (req, res) => {
         leverageType: pos.position.leverage.type,
         positionSize: pos.position.szi,
         canSwitchMode: false, // Cannot switch with open position
-        message: '有未平仓头寸，无法切换杠杆模式'
+        message: 'Cannot switch leverage mode with open positions'
       }))
       
       leverageStatus.summary.totalPositions = leverageStatus.positions.length
       leverageStatus.summary.crossPositions = leverageStatus.positions.filter(p => p.leverageType === 'cross').length
       leverageStatus.summary.isolatedPositions = leverageStatus.positions.filter(p => p.leverageType === 'isolated').length
       leverageStatus.summary.canSwitchMode = false
-      leverageStatus.summary.message = '账户有未平仓头寸，无法切换杠杆模式'
+      leverageStatus.summary.message = 'Account has open positions, cannot switch leverage mode'
     } else {
-      leverageStatus.summary.message = '账户无未平仓头寸，可以自由切换杠杆模式'
+      leverageStatus.summary.message = 'Account has no open positions, can freely switch leverage mode'
     }
     
     console.log('✅ Leverage status retrieved:', {
@@ -783,6 +862,8 @@ app.post('/api/update-leverage', async (req, res) => {
       timestamp: new Date().toISOString()
     })
     
+    console.log('🔍 Full request body:', JSON.stringify(req.body, null, 2))
+    
     // Validate required parameters
     if (!coin) {
       console.log('❌ Update leverage failed: Missing coin parameter')
@@ -813,11 +894,18 @@ app.post('/api/update-leverage', async (req, res) => {
     }
     
     console.log('✅ Calling SDK updateLeverage with validated parameters')
-    const result = await exchangeClient.updateLeverage({
-      asset: getAssetId(coin),
+    const assetId = await getAssetId(coin)
+    console.log(`📋 Using asset ID ${assetId} for coin ${coin}`)
+    
+    const leverageParams = {
+      coin: coin,
       leverage: leverageNum,
-      isCross: leverageMode === 'cross'
-    })
+      leverageMode: leverageMode
+    }
+    
+    console.log('🎯 SDK updateLeverage parameters:', JSON.stringify(leverageParams, null, 2))
+    
+    const result = await exchangeClient.updateLeverage(leverageParams)
     
     console.log('✅ Leverage update successful:', {
       coin,
@@ -838,19 +926,28 @@ app.post('/api/update-leverage', async (req, res) => {
     // Provide user-friendly error messages
     let userMessage = error.message
     if (error.message.includes('Cannot switch leverage type with open position')) {
-      userMessage = '无法在有未平仓头寸时切换杠杆模式。请先平仓所有头寸，或保持当前杠杆模式只更新杠杆倍数。'
+      userMessage = 'Cannot switch leverage mode with open positions. Please close all positions first, or keep current leverage mode and only update leverage multiplier.'
     } else if (error.message.includes('Failed to deserialize')) {
-      userMessage = '参数格式错误，请检查币种名称和杠杆设置。'
+      userMessage = 'Parameter format error, please check coin name and leverage settings.'
     } else if (error.message.includes('Invalid leverage')) {
-      userMessage = '杠杆倍数无效，请设置合理的杠杆值。'
+      userMessage = 'Invalid leverage value, please set a reasonable leverage value.'
+    } else if (error.message.includes('HTTP request failed')) {
+      userMessage = `API request failed: ${error.message}`
     }
+    
+    console.log('🔍 Detailed error information:', {
+      errorMessage: error.message,
+      errorStack: error.stack,
+      requestBody: req.body,
+      assetId: await getAssetId(coin).catch(() => 'Failed to get asset ID')
+    })
     
     res.status(500).json({ 
       error: userMessage,
       originalError: error.message,
       suggestion: error.message.includes('Cannot switch leverage type') 
-        ? '建议：保持当前杠杆模式，只更新杠杆倍数' 
-        : '建议：检查参数格式和账户状态'
+        ? 'Suggestion: Keep current leverage mode and only update leverage multiplier' 
+        : 'Suggestion: Check parameter format and account status'
     })
   }
 })
@@ -885,8 +982,9 @@ app.post('/api/cancel-orders', async (req, res) => {
     const { coin, orderIds } = req.body
     console.log(`🗑️ Canceling orders for ${coin}:`, orderIds)
     
+    const assetId = await getAssetId(coin)
     const cancels = orderIds.map(oid => ({
-      a: getAssetId(coin),
+      a: assetId,
       o: oid
     }))
     
@@ -1088,35 +1186,87 @@ const getMarketPriceForIOC = async (coinName, isBuy) => {
   }
 }
 
-// Helper function to get asset ID
-const getAssetId = (coinName) => {
-  // Asset ID mapping - this should be fetched from the API in production
-  const assetMap = {
-    'BTC-PERP': 3,    // Fixed: BTC is index 3, not 0
-    'ETH-PERP': 1,
-    'DOGE-PERP': 173,
-    'SOL-PERP': 2,
-    'AVAX-PERP': 7,   // Fixed: AVAX is index 7, not 3
-    'MATIC-PERP': 4,
-    'ARB-PERP': 5,
-    'OP-PERP': 6,
-    'SUI-PERP': 8,    // Fixed: SUI is index 8, not 7
-    'APT-PERP': 9,    // Fixed: APT is index 9, not 8
-    'NEAR-PERP': 10,  // Fixed: NEAR is index 10, not 9
-    'ATOM-PERP': 11,  // Fixed: ATOM is index 11, not 10
-    'DOT-PERP': 12,   // Fixed: DOT is index 12, not 11
-    'LINK-PERP': 13,  // Fixed: LINK is index 13, not 12
-    'UNI-PERP': 14,   // Fixed: UNI is index 14, not 13
-    'AAVE-PERP': 15,  // Fixed: AAVE is index 15, not 14
-    'CRV-PERP': 16,   // Fixed: CRV is index 16, not 15
-    'MKR-PERP': 17,   // Fixed: MKR is index 17, not 16
-    'COMP-PERP': 18,  // Fixed: COMP is index 18, not 17
-    'YFI-PERP': 19,   // Fixed: YFI is index 19, not 18
-    'SNX-PERP': 20,   // Fixed: SNX is index 20, not 19
-    'SUSHI-PERP': 21  // Fixed: SUSHI is index 21, not 20
+// Dynamic asset ID mapping from API
+let assetIdCache = {}
+let assetIdCacheTimestamp = 0
+const ASSET_ID_CACHE_DURATION = 300000 // 5 minutes
+
+// Helper function to get asset ID from API
+const getAssetId = async (coinName) => {
+  try {
+    // Check if we have a recent cache
+    const now = Date.now()
+    if (Object.keys(assetIdCache).length > 0 && (now - assetIdCacheTimestamp) < ASSET_ID_CACHE_DURATION) {
+      console.log(`📋 Using cached asset ID for ${coinName}: ${assetIdCache[coinName]}`)
+      return assetIdCache[coinName] || 0
+    }
+
+    // Fetch fresh data from API
+    if (!infoClient) {
+      console.log(`⚠️ InfoClient not available, using fallback for ${coinName}`)
+      return getFallbackAssetId(coinName)
+    }
+
+    console.log(`🔄 Fetching fresh asset IDs from API for ${coinName}`)
+    const meta = await infoClient.meta()
+    
+    if (meta && meta.universe) {
+      // Build asset ID mapping from API response
+      const newAssetIdCache = {}
+      meta.universe.forEach((asset, index) => {
+        if (asset.name) {
+          // Map both with and without -PERP suffix
+          newAssetIdCache[asset.name] = index
+          newAssetIdCache[`${asset.name}-PERP`] = index
+        }
+      })
+      
+      assetIdCache = newAssetIdCache
+      assetIdCacheTimestamp = now
+      
+      console.log(`✅ Updated asset ID cache:`, Object.keys(assetIdCache).slice(0, 10), '...')
+      console.log(`📋 Asset ID for ${coinName}: ${assetIdCache[coinName]}`)
+      
+      return assetIdCache[coinName] || 0
+    }
+  } catch (error) {
+    console.error(`❌ Failed to fetch asset ID for ${coinName}:`, error)
   }
   
-  return assetMap[coinName] || 0 // Default to BTC if not found
+  // Fallback to hardcoded values if API fails
+  return getFallbackAssetId(coinName)
+}
+
+// Fallback asset ID mapping (used when API is unavailable)
+const getFallbackAssetId = (coinName) => {
+  const fallbackMap = {
+    'BTC-PERP': 3,
+    'ETH-PERP': 4,
+    'DOGE-PERP': 173,
+    'SOL-PERP': 2,
+    'AVAX-PERP': 7,
+    'MATIC-PERP': 1,
+    'ARB-PERP': 5,
+    'OP-PERP': 6,
+    'SUI-PERP': 8,
+    'APT-PERP': 9,
+    'NEAR-PERP': 10,
+    'ATOM-PERP': 11,
+    'DOT-PERP': 12,
+    'LINK-PERP': 13,
+    'UNI-PERP': 14,
+    'AAVE-PERP': 15,
+    'CRV-PERP': 16,
+    'MKR-PERP': 17,
+    'COMP-PERP': 18,
+    'YFI-PERP': 19,
+    'SNX-PERP': 20,
+    'SUSHI-PERP': 21
+  }
+  
+  const assetId = fallbackMap[coinName] || 0
+  console.log(`🔄 Using fallback asset ID for ${coinName}: ${assetId}`)
+  return assetId
 }
 
 // Helper function to format price for tick size
@@ -1460,12 +1610,13 @@ const executeTwapOrder = async (task, orderIndex) => {
       isBuy: task.is_buy,
       price: orderParams.limit_px,
       orderType: 'IOC',
-      assetId: getAssetId(task.coin)
+      assetId: await getAssetId(task.coin)
     })
     
+    const assetId = await getAssetId(task.coin)
     const result = await exchangeClient.order({
       orders: [{
-        a: getAssetId(task.coin),
+        a: assetId,
         b: task.is_buy,
         p: orderParams.limit_px || '0',
         s: sizeString || '0',

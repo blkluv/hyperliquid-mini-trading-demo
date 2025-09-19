@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import toast from 'react-hot-toast'
 import { hyperliquidService, LeverageParams, OrderParams } from '../services/hyperliquidService'
 import { CONFIG } from '../config/config'
 import { TradingConfigHelper } from '../config/tradingConfig'
@@ -459,7 +460,21 @@ export const useTrading = () => {
       
       return result
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to place order')
+      const errorMessage = err instanceof Error ? err.message : 'Failed to place order'
+      setError(errorMessage)
+      
+      // Show toast for price validation errors
+      if (errorMessage.includes('Order price cannot be more than 80% away from the reference price')) {
+        toast.error('Price too far from market! Please adjust your order price to be within 80% of the current market price.', {
+          duration: 6000,
+          style: {
+            background: '#7f1d1d',
+            color: '#ffffff',
+            border: '1px solid #ef4444',
+          },
+        })
+      }
+      
       throw err
     } finally {
       setIsLoading(false)

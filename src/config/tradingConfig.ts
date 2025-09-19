@@ -18,13 +18,16 @@ export const TRADING_CONFIG = {
     
     // Account data refresh interval (in milliseconds)
     ACCOUNT_REFRESH_INTERVAL: 5000,
+    
+    // Task cleanup delay (in milliseconds)
+    TASK_CLEANUP_DELAY: 30000, // 30 seconds
   },
 
   // Minimum order sizes for different coins
   MIN_ORDER_SIZES: {
     'DOGE-PERP': 1,
     'BTC-PERP': 0.00001,
-    'ETH-PERP': 0.0001,
+    'ETH-PERP': 0.01,  // Increased from 0.0001 to 0.01
     'SOL-PERP': 0.1,
     'AVAX-PERP': 0.1,
     'MATIC-PERP': 0.1,
@@ -38,7 +41,7 @@ export const TRADING_CONFIG = {
   ROUNDING_PRECISION: {
     'DOGE-PERP': 0,    // Round to integer
     'BTC-PERP': 5,     // 5 decimal places (0.00001)
-    'ETH-PERP': 4,     // 4 decimal places (0.0001)
+    'ETH-PERP': 2,     // 2 decimal places (0.01) - Updated to match new min size
     'SOL-PERP': 2,     // 2 decimal places (0.01)
     'AVAX-PERP': 2,    // 2 decimal places (0.01)
     'MATIC-PERP': 2,   // 2 decimal places (0.01)
