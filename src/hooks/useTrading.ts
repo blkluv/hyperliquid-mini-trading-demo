@@ -23,9 +23,8 @@ export interface TradingState {
   // Scale order specific fields
   scaleStartPrice: string
   scaleEndPrice: string
-  scaleStepSize: string
   scaleOrderCount: string
-  scaleSizeDistribution: 'equal' | 'linear'
+  scaleSizeSkew: string
   // TWAP order specific fields
   twapRunningTimeHours: string
   twapRunningTimeMinutes: string
@@ -158,9 +157,8 @@ export const useTrading = () => {
     // Scale order defaults
     scaleStartPrice: '',
     scaleEndPrice: '',
-    scaleStepSize: '',
     scaleOrderCount: '5',
-    scaleSizeDistribution: 'equal',
+    scaleSizeSkew: '1',
     // TWAP order defaults
     twapRunningTimeHours: '0',
     twapRunningTimeMinutes: '30',
@@ -290,9 +288,7 @@ export const useTrading = () => {
         if (parseInt(state.scaleOrderCount) > 20) {
           errors.push('Maximum 20 scale orders allowed')
         }
-        if (parseFloat(state.scaleStartPrice) <= parseFloat(state.scaleEndPrice)) {
-          errors.push('Start price must be higher than end price')
-        }
+
         break
 
       case 'twap':
@@ -483,24 +479,54 @@ export const useTrading = () => {
       return
     }
 
-    if (startPrice <= endPrice) {
-      setError('Start price must be higher than end price')
-      return
-    }
+
 
     const results = []
-    const priceStep = (startPrice - endPrice) / (orderCount - 1)
+    const priceStep = (endPrice - startPrice) / Math.max(1, orderCount - 1)
+
+    // Calculate normalization factor for size skew to ensure total size matches
+    const sizeSkew = parseFloat(state.scaleSizeSkew) || 1
+    let normalizationFactor = 1
+    if (orderCount > 1 && sizeSkew !== 1) {
+      let totalSkewFactor = 0
+      for (let j = 0; j < orderCount; j++) {
+        totalSkewFactor += Math.pow(sizeSkew, j / Math.max(1, orderCount - 1))
+      }
+      normalizationFactor = orderCount / totalSkewFactor
+    }
 
     for (let i = 0; i < orderCount; i++) {
-      const rawPrice = startPrice - (priceStep * i)
+      const rawPrice = startPrice + (priceStep * i)
       const price = formatPriceForTickSize(rawPrice, state.selectedCoin)
-      let size = totalSize / orderCount // Equal distribution
+      let size = totalSize / orderCount // Base size
       
-      if (state.scaleSizeDistribution === 'linear') {
-        // Linear distribution - larger sizes at better prices
-        const factor = (orderCount - i) / orderCount
-        size = totalSize * factor * (2 / orderCount)
+      // Apply size skew with normalization
+      if (sizeSkew !== 1) {
+        const skewFactor = Math.pow(sizeSkew, i / Math.max(1, orderCount - 1))
+        size = size * skewFactor * normalizationFactor
       }
+      
+      // Round to coin-specific precision
+      const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
+      let roundedSize
+      switch (baseCoin) {
+        case 'DOGE':
+          roundedSize = Math.round(size) // Round to integer
+          break
+        case 'BTC':
+          roundedSize = Math.round(size * 100000) / 100000 // 5 decimal places
+          break
+        case 'ETH':
+          roundedSize = Math.round(size * 10000) / 10000 // 4 decimal places
+          break
+        case 'SOL':
+          roundedSize = Math.round(size * 100) / 100 // 2 decimal places
+          break
+        default:
+          roundedSize = Math.round(size * 1000000) / 1000000 // 6 decimal places
+      }
+      
+      size = roundedSize
 
       const orderParams: OrderParams = {
         coin: state.selectedCoin,

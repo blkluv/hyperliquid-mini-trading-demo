@@ -51,20 +51,20 @@ const TradingInterface: React.FC = () => {
     // Apply coin-specific rounding rules
     switch (baseCoin) {
       case 'DOGE':
-        // DOGE: Round up to integer
-        return Math.ceil(rawSize)
+        // DOGE: Round to integer
+        return Math.round(rawSize)
       case 'BTC':
-        // BTC: Round up to 0.00001 (5 decimal places)
-        return Math.ceil(rawSize * 100000) / 100000
+        // BTC: Round to 0.00001 (5 decimal places)
+        return Math.round(rawSize * 100000) / 100000
       case 'ETH':
-        // ETH: Round up to 0.0001 (4 decimal places)
-        return Math.ceil(rawSize * 10000) / 10000
+        // ETH: Round to 0.0001 (4 decimal places)
+        return Math.round(rawSize * 10000) / 10000
       case 'SOL':
-        // SOL: Round up to 0.01 (2 decimal places)
-        return Math.ceil(rawSize * 100) / 100
+        // SOL: Round to 0.01 (2 decimal places)
+        return Math.round(rawSize * 100) / 100
       default:
-        // Default: Round up to 0.000001 (6 decimal places)
-        return Math.ceil(rawSize * 1000000) / 1000000
+        // Default: Round to 0.000001 (6 decimal places)
+        return Math.round(rawSize * 1000000) / 1000000
     }
   }
 
@@ -397,11 +397,7 @@ const TradingInterface: React.FC = () => {
         if ((touchedFields.has('scaleStartPrice') || touchedFields.has('scaleEndPrice')) && 
             state.scaleStartPrice && state.scaleEndPrice && 
             state.scaleStartPrice.trim() !== '' && state.scaleEndPrice.trim() !== '') {
-          const startPrice = parseFloat(state.scaleStartPrice.trim())
-          const endPrice = parseFloat(state.scaleEndPrice.trim())
-          if (!isNaN(startPrice) && !isNaN(endPrice) && startPrice <= endPrice) {
-            errors.push('Start price must be higher than end price')
-          }
+          // Price validation is handled in individual field validations
         }
         
         if (touchedFields.has('scaleOrderCount')) {
@@ -486,19 +482,19 @@ const TradingInterface: React.FC = () => {
               
               switch (baseCoin) {
                 case 'DOGE':
-                  roundedSubOrderSize = Math.ceil(subOrderSize)
+                  roundedSubOrderSize = Math.round(subOrderSize) // Round to integer
                   break
                 case 'BTC':
-                  roundedSubOrderSize = Math.ceil(subOrderSize * 100000) / 100000
+                  roundedSubOrderSize = Math.round(subOrderSize * 100000) / 100000 // 5 decimal places
                   break
                 case 'ETH':
-                  roundedSubOrderSize = Math.ceil(subOrderSize * 10000) / 10000
+                  roundedSubOrderSize = Math.round(subOrderSize * 10000) / 10000 // 4 decimal places
                   break
                 case 'SOL':
-                  roundedSubOrderSize = Math.ceil(subOrderSize * 100) / 100
+                  roundedSubOrderSize = Math.round(subOrderSize * 100) / 100 // 2 decimal places
                   break
                 default:
-                  roundedSubOrderSize = Math.ceil(subOrderSize * 1000000) / 1000000
+                  roundedSubOrderSize = Math.round(subOrderSize * 1000000) / 1000000 // 6 decimal places
               }
               
               // Recalculate USD value with rounded size
@@ -775,24 +771,6 @@ const TradingInterface: React.FC = () => {
     }
   }
 
-  const handleScalePriceChange = (field: 'scaleStartPrice' | 'scaleEndPrice' | 'scaleStepSize', value: string) => {
-    // Normalize input: trim spaces, only allow numeric input (including decimal point)
-    const trimmedValue = value.trim()
-    const numericValue = trimmedValue.replace(/[^0-9.]/g, '')
-    // Prevent multiple decimal points
-    const parts = numericValue.split('.')
-    const formattedValue = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : numericValue
-    markFieldAsTouched(field)
-    setState(prev => ({ ...prev, [field]: formattedValue }))
-  }
-
-  const handleScaleOrderCountChange = (value: string) => {
-    // Normalize input: trim spaces, only allow positive integers
-    const trimmedValue = value.trim()
-    const numericValue = trimmedValue.replace(/[^0-9]/g, '')
-    markFieldAsTouched('scaleOrderCount')
-    setState(prev => ({ ...prev, scaleOrderCount: numericValue }))
-  }
 
   const handleTwapNumericChange = (field: 'twapRunningTimeHours' | 'twapRunningTimeMinutes' | 'twapNumberOfIntervals' | 'twapPriceOffset', value: string) => {
     // Normalize input: trim spaces, only allow numeric input (including decimal point)
@@ -1626,112 +1604,206 @@ const TradingInterface: React.FC = () => {
             </div>
           </div>
         ) : state.orderType === 'scale' ? (
-          <div className="mb-2 space-y-2">
-            <div className="text-sm text-gray-400 mb-2">Scale Order Configuration</div>
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                placeholder="Start Price"
-                value={state.scaleStartPrice}
-                onChange={(e) => handleScalePriceChange('scaleStartPrice', e.target.value)}
-                className="px-3 py-2 bg-dark-border border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-teal-primary"
-              />
-              <input
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                placeholder="End Price"
-                value={state.scaleEndPrice}
-                onChange={(e) => handleScalePriceChange('scaleEndPrice', e.target.value)}
-                className="px-3 py-2 bg-dark-border border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-teal-primary"
-              />
+          <div className="mb-2 space-y-3">
+            {/* Size Input with Dropdown */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-400">Size</span>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={state.size}
+                    onChange={(e) => setState(prev => ({ ...prev, size: e.target.value }))}
+                    className="w-32 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white text-right focus:outline-none focus:border-teal-primary"
+                    placeholder="100"
+                  />
+                  <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex items-center gap-1">
+                    <span className="text-sm text-gray-300">{state.sizeUnit}</span>
+                    <ChevronDown size={12} className="text-gray-400" />
+                  </div>
+                </div>
+              </div>
+              
+              {/* Size Slider */}
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={state.sizePercentage}
+                    onChange={(e) => {
+                      const percentage = parseInt(e.target.value)
+                      setState(prev => ({ ...prev, sizePercentage: percentage }))
+                      if (typeof topCardPrice === 'number' && accountInfo.availableToTrade) {
+                        const availableBalance = parseFloat(accountInfo.availableToTrade)
+                        const sizeValue = (availableBalance * percentage / 100) / topCardPrice
+                        setState(prev => ({ ...prev, size: sizeValue.toFixed(2) }))
+                      }
+                    }}
+                    className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer slider"
+                  />
+                </div>
+                <div className="w-16">
+                  <input
+                    type="text"
+                    value={`${state.sizePercentage}%`}
+                    onChange={(e) => {
+                      const value = e.target.value.replace('%', '')
+                      const percentage = parseInt(value) || 0
+                      setState(prev => ({ ...prev, sizePercentage: Math.min(100, Math.max(0, percentage)) }))
+                    }}
+                    className="w-full px-2 py-1 bg-dark-border border border-gray-600 rounded text-white text-center text-sm focus:outline-none focus:border-teal-primary"
+                  />
+                </div>
+              </div>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                placeholder="Step Size"
-                value={state.scaleStepSize}
-                onChange={(e) => handleScalePriceChange('scaleStepSize', e.target.value)}
-                className="px-3 py-2 bg-dark-border border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-teal-primary"
-              />
-              <input
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                placeholder="Order Count"
-                value={state.scaleOrderCount}
-                onChange={(e) => handleScaleOrderCountChange(e.target.value)}
-                className="px-3 py-2 bg-dark-border border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-teal-primary"
-              />
+
+            {/* Scale Order Configuration */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-400">Start (USD)</span>
+                <input
+                  type="text"
+                  value={state.scaleStartPrice}
+                  onChange={(e) => setState(prev => ({ ...prev, scaleStartPrice: e.target.value }))}
+                  className="w-32 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white text-right focus:outline-none focus:border-teal-primary"
+                  placeholder="0.28"
+                />
+              </div>
+              
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-400">End (USD)</span>
+                <input
+                  type="text"
+                  value={state.scaleEndPrice}
+                  onChange={(e) => setState(prev => ({ ...prev, scaleEndPrice: e.target.value }))}
+                  className="w-32 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white text-right focus:outline-none focus:border-teal-primary"
+                  placeholder="0.3"
+                />
+              </div>
+              
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-400">Total Orders</span>
+                <input
+                  type="text"
+                  value={state.scaleOrderCount}
+                  onChange={(e) => setState(prev => ({ ...prev, scaleOrderCount: e.target.value }))}
+                  className="w-32 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white text-right focus:outline-none focus:border-teal-primary"
+                  placeholder="2"
+                />
+              </div>
+              
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-400">Size Skew</span>
+                <input
+                  type="text"
+                  value={state.scaleSizeSkew}
+                  onChange={(e) => setState(prev => ({ ...prev, scaleSizeSkew: e.target.value }))}
+                  className="w-32 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white text-right focus:outline-none focus:border-teal-primary"
+                  placeholder="1"
+                />
+              </div>
             </div>
-            <div className="flex gap-2">
-              <select
-                value={state.scaleSizeDistribution}
-                onChange={(e) => setState(prev => ({ ...prev, scaleSizeDistribution: e.target.value as 'equal' | 'linear' }))}
-                className="flex-1 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white focus:outline-none focus:border-teal-primary"
-              >
-                <option value="equal">Equal Size</option>
-                <option value="linear">Linear Distribution</option>
-              </select>
-              <button
-                type="button"
-                onClick={() => {
-                  if (typeof topCardPrice === 'number') {
-                    const startPrice = (topCardPrice * 1.02).toFixed(2)
-                    const endPrice = (topCardPrice * 0.98).toFixed(2)
-                    const stepSize = ((parseFloat(startPrice) - parseFloat(endPrice)) / 4).toFixed(2)
-                    setState(prev => ({ 
-                      ...prev, 
-                      scaleStartPrice: startPrice,
-                      scaleEndPrice: endPrice,
-                      scaleStepSize: stepSize
-                    }))
-                  }
-                }}
-                disabled={typeof topCardPrice !== 'number'}
-                className="px-3 py-2 bg-teal-primary text-black text-sm font-medium rounded hover:bg-teal-400 disabled:bg-gray-600 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors"
-              >
-                Auto
-              </button>
+
+            {/* Reduce Only and TIF */}
+            <div className="flex items-center justify-between">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={state.reduceOnly}
+                  onChange={(e) => setState(prev => ({ ...prev, reduceOnly: e.target.checked }))}
+                  className="w-4 h-4 text-teal-primary bg-dark-border border-gray-600 rounded focus:ring-teal-primary focus:ring-2"
+                />
+                <span className="text-sm text-gray-400">Reduce Only</span>
+              </label>
+              
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-400">TIF</span>
+                <select
+                  value={state.timeInForce}
+                  onChange={(e) => setState(prev => ({ ...prev, timeInForce: e.target.value as 'GTC' | 'IOC' | 'ALO' }))}
+                  className="px-2 py-1 bg-dark-border border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-teal-primary"
+                >
+                  <option value="GTC">GTC</option>
+                  <option value="IOC">IOC</option>
+                  <option value="ALO">ALO</option>
+                </select>
+                <ChevronDown size={12} className="text-gray-400" />
+              </div>
             </div>
             
             {/* Scale Order Preview */}
-            {state.scaleStartPrice && state.scaleEndPrice && state.scaleStepSize && state.scaleOrderCount && (
+            {state.scaleStartPrice && state.scaleEndPrice && state.scaleOrderCount && (
               <div className="mt-3 p-3 bg-gray-800/50 border border-gray-600 rounded">
                 <div className="text-xs text-gray-400 mb-2">Order Preview:</div>
                 <div className="space-y-1 max-h-32 overflow-y-auto">
                   {(() => {
                     const startPrice = parseFloat(state.scaleStartPrice)
                     const endPrice = parseFloat(state.scaleEndPrice)
-                    const stepSize = parseFloat(state.scaleStepSize)
                     const orderCount = parseInt(state.scaleOrderCount)
-                    const totalSize = parseFloat(state.size) || 0
+                    const sizeSkew = parseFloat(state.scaleSizeSkew) || 1
+                    let totalSize = parseFloat(state.size) || 0
                     
-                    if (isNaN(startPrice) || isNaN(endPrice) || isNaN(stepSize) || isNaN(orderCount) || orderCount <= 0) {
+                    // Convert USD to coin size if needed
+                    if (state.sizeUnit === 'USD' && typeof topCardPrice === 'number') {
+                      totalSize = totalSize / topCardPrice
+                    }
+                    
+                    if (isNaN(startPrice) || isNaN(endPrice) || isNaN(orderCount) || orderCount <= 0) {
                       return <div className="text-xs text-gray-500">Invalid parameters</div>
                     }
                     
                     const orders = []
-                    const priceStep = (startPrice - endPrice) / (orderCount - 1)
+                    const priceStep = (endPrice - startPrice) / Math.max(1, orderCount - 1)
                     
                     for (let i = 0; i < orderCount; i++) {
-                      const price = (startPrice - (priceStep * i)).toFixed(2)
-                      let size = totalSize / orderCount // Equal distribution
+                      const price = (startPrice + (priceStep * i)).toFixed(5)
+                      // Calculate size based on size skew
+                      // Size skew determines the ratio between end and start order sizes
+                      // If size skew = 2.0, end order will be twice the size of start order
+                      // If size skew = 1.0, all orders will be equal size
+                      const skewFactor = Math.pow(sizeSkew, i / Math.max(1, orderCount - 1))
                       
-                      if (state.scaleSizeDistribution === 'linear') {
-                        // Linear distribution - larger sizes at better prices
-                        const factor = (orderCount - i) / orderCount
-                        size = totalSize * factor * (2 / orderCount)
+                      // Calculate normalization factor to ensure total size matches
+                      let normalizationFactor = 1
+                      if (orderCount > 1) {
+                        let totalSkewFactor = 0
+                        for (let j = 0; j < orderCount; j++) {
+                          totalSkewFactor += Math.pow(sizeSkew, j / Math.max(1, orderCount - 1))
+                        }
+                        normalizationFactor = orderCount / totalSkewFactor
                       }
+                      
+                      const baseSize = totalSize / orderCount
+                      const rawSize = baseSize * skewFactor * normalizationFactor
+                      
+                      // Round to coin-specific precision
+                      const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
+                      let roundedSize
+                      switch (baseCoin) {
+                        case 'DOGE':
+                          roundedSize = Math.round(rawSize) // Round to integer
+                          break
+                        case 'BTC':
+                          roundedSize = Math.round(rawSize * 100000) / 100000 // 5 decimal places
+                          break
+                        case 'ETH':
+                          roundedSize = Math.round(rawSize * 10000) / 10000 // 4 decimal places
+                          break
+                        case 'SOL':
+                          roundedSize = Math.round(rawSize * 100) / 100 // 2 decimal places
+                          break
+                        default:
+                          roundedSize = Math.round(rawSize * 1000000) / 1000000 // 6 decimal places
+                      }
+                      
+                      const size = roundedSize.toFixed(6)
                       
                       orders.push(
                         <div key={i} className="flex justify-between text-xs">
                           <span className="text-gray-300">Order {i + 1}:</span>
-                          <span className="text-white">${price} × {size.toFixed(4)}</span>
+                          <span className="text-white">${price} × {parseFloat(size).toFixed(4)}</span>
                         </div>
                       )
                     }
@@ -1865,19 +1937,19 @@ const TradingInterface: React.FC = () => {
                     
                     switch (baseCoin) {
                       case 'DOGE':
-                        roundedSubOrderSize = Math.ceil(subOrderSize)
+                        roundedSubOrderSize = Math.round(subOrderSize) // Round to integer
                         break
                       case 'BTC':
-                        roundedSubOrderSize = Math.ceil(subOrderSize * 100000) / 100000
+                        roundedSubOrderSize = Math.round(subOrderSize * 100000) / 100000 // 5 decimal places
                         break
                       case 'ETH':
-                        roundedSubOrderSize = Math.ceil(subOrderSize * 10000) / 10000
+                        roundedSubOrderSize = Math.round(subOrderSize * 10000) / 10000 // 4 decimal places
                         break
                       case 'SOL':
-                        roundedSubOrderSize = Math.ceil(subOrderSize * 100) / 100
+                        roundedSubOrderSize = Math.round(subOrderSize * 100) / 100 // 2 decimal places
                         break
                       default:
-                        roundedSubOrderSize = Math.ceil(subOrderSize * 1000000) / 1000000
+                        roundedSubOrderSize = Math.round(subOrderSize * 1000000) / 1000000 // 6 decimal places
                     }
                     
                     // Recalculate USD value with rounded size
@@ -2134,7 +2206,7 @@ const TradingInterface: React.FC = () => {
       <button
         onClick={handleSubmitOrder}
         disabled={!isInitialized || isLoading || !state.size || validationErrors.length > 0 ||
-          (state.orderType === 'scale' && (!state.scaleStartPrice || !state.scaleEndPrice || !state.scaleOrderCount)) ||
+          (state.orderType === 'scale' && (!state.scaleStartPrice || !state.scaleEndPrice || !state.scaleOrderCount || !state.scaleSizeSkew)) ||
           (state.orderType === 'twap' && (!state.twapRunningTimeHours || !state.twapRunningTimeMinutes || !state.twapNumberOfIntervals))}
         className="w-full py-3 bg-teal-primary hover:bg-teal-hover disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded mb-6 transition-colors"
       >
@@ -2146,83 +2218,328 @@ const TradingInterface: React.FC = () => {
 
       {/* Order Details */}
       <div className="space-y-3 text-sm">
-        <div className="flex justify-between">
-          <span className="text-gray-400">Liquidation Price:</span>
-          <span className="text-white">
-            {(() => {
-              if (state.size && typeof topCardPrice === 'number') {
-                // Calculate liquidation price based on order parameters
-                const entryPrice = state.orderType === 'limit' && state.limitPrice 
-                  ? parseFloat(state.limitPrice) 
-                  : topCardPrice // Use current price for market orders
-                const leverage = state.leverage
-                
-                const liquidationPrice = calculateLiquidationPrice(entryPrice, leverage, state.side, state.selectedCoin)
-                return `$${liquidationPrice.toFixed(2)}`
-              }
-              return 'N/A'
-            })()}
-          </span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-400">Order Value:</span>
-          <span className="text-white">
-            {(() => {
-              // Check if size is valid
-              const sizeValue = parseFloat(state.size || '0')
-              const isValidSize = !isNaN(sizeValue) && sizeValue > 0
-              
-              if (state.size && state.sizeUnit === 'USD' && isValidSize) {
-                return `$${sizeValue.toFixed(2)}`
-              } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number' && isValidSize) {
-                const value = sizeValue * topCardPrice
-                return `$${value.toFixed(2)}`
-              }
-              return 'N/A'
-            })()}
-          </span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-400">Margin Required:</span>
-          <span className="text-white">
-            {(() => {
-              if (state.size && state.sizeUnit === 'USD') {
-                const margin = parseFloat(state.size) / state.leverage
-                return `$${margin.toFixed(2)}`
-              } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number') {
-                const value = parseFloat(state.size) * topCardPrice
-                const margin = value / state.leverage
-                return `$${margin.toFixed(2)}`
-              }
-              return 'N/A'
-            })()}
-          </span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-400">Slippage:</span>
-          <span className="text-white">
-            {state.orderType === 'market' ? 'Est: 0.1% / Max: 0.5%' : 'Est: 0% / Max: 0.1%'}
-          </span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-400">Fees:</span>
-          <span className="text-green-400 flex items-center gap-1">
-            <TrendingUp size={14} />
-            {(() => {
-              if (state.size && state.sizeUnit === 'USD') {
-                const makerFee = parseFloat(state.size) * 0.0001 // 0.01% maker fee
-                const takerFee = parseFloat(state.size) * 0.0002 // 0.02% taker fee
-                return `${(makerFee * 100).toFixed(4)}% / ${(takerFee * 100).toFixed(4)}%`
-              } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number') {
-                const value = parseFloat(state.size) * topCardPrice
-                const makerFee = value * 0.0001
-                const takerFee = value * 0.0002
-                return `${(makerFee * 100).toFixed(4)}% / ${(takerFee * 100).toFixed(4)}%`
-              }
-              return '0.01% / 0.02%'
-            })()}
-          </span>
-        </div>
+        {state.orderType === 'scale' ? (
+          <>
+            {/* Scale Order Summary */}
+            <div className="flex justify-between">
+              <span className="text-gray-400">Start:</span>
+              <span className="text-white">
+                {(() => {
+                  const startPrice = parseFloat(state.scaleStartPrice || '0')
+                  const orderCount = parseInt(state.scaleOrderCount || '1')
+                  let totalSize = parseFloat(state.size || '0')
+                  const sizeSkew = parseFloat(state.scaleSizeSkew || '1')
+                  
+                  // Convert USD to coin size if needed
+                  if (state.sizeUnit === 'USD' && typeof topCardPrice === 'number') {
+                    totalSize = totalSize / topCardPrice
+                  }
+                  
+                  if (orderCount <= 0 || totalSize <= 0 || startPrice <= 0) {
+                    return `0 ${state.sizeUnit} @ $0.00000`
+                  }
+                  
+                  // Calculate size for first order (i=0)
+                  // For size skew = 1.0, all orders are equal size
+                  // For size skew = 2.0, end order is twice the size of start order
+                  const skewFactor = Math.pow(sizeSkew, 0 / Math.max(1, orderCount - 1))
+                  
+                  // Calculate normalization factor to ensure total size matches
+                  let normalizationFactor = 1
+                  if (orderCount > 1) {
+                    let totalSkewFactor = 0
+                    for (let j = 0; j < orderCount; j++) {
+                      totalSkewFactor += Math.pow(sizeSkew, j / Math.max(1, orderCount - 1))
+                    }
+                    normalizationFactor = orderCount / totalSkewFactor
+                  }
+                  
+                  const baseSize = totalSize / orderCount
+                  const rawSize = baseSize * skewFactor * normalizationFactor
+                  
+                  // Round to coin-specific precision
+                  const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
+                  let roundedSize
+                  switch (baseCoin) {
+                    case 'DOGE':
+                      roundedSize = Math.round(rawSize) // Round to integer
+                      break
+                    case 'BTC':
+                      roundedSize = Math.round(rawSize * 100000) / 100000 // 5 decimal places
+                      break
+                    case 'ETH':
+                      roundedSize = Math.round(rawSize * 10000) / 10000 // 4 decimal places
+                      break
+                    case 'SOL':
+                      roundedSize = Math.round(rawSize * 100) / 100 // 2 decimal places
+                      break
+                    default:
+                      roundedSize = Math.round(rawSize * 1000000) / 1000000 // 6 decimal places
+                  }
+                  
+                  return `${roundedSize.toFixed(6)} ${state.sizeUnit} @ $${startPrice.toFixed(5)}`
+                })()}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">End:</span>
+              <span className="text-white">
+                {(() => {
+                  const endPrice = parseFloat(state.scaleEndPrice || '0')
+                  const orderCount = parseInt(state.scaleOrderCount || '1')
+                  let totalSize = parseFloat(state.size || '0')
+                  const sizeSkew = parseFloat(state.scaleSizeSkew || '1')
+                  
+                  // Convert USD to coin size if needed
+                  if (state.sizeUnit === 'USD' && typeof topCardPrice === 'number') {
+                    totalSize = totalSize / topCardPrice
+                  }
+                  
+                  if (orderCount <= 0 || totalSize <= 0 || endPrice <= 0) {
+                    return `0 ${state.sizeUnit} @ $0.00000`
+                  }
+                  
+                  // Calculate size for last order (i=orderCount-1)
+                  // For size skew = 1.0, all orders are equal size
+                  // For size skew = 2.0, end order is twice the size of start order
+                  const skewFactor = Math.pow(sizeSkew, (orderCount - 1) / Math.max(1, orderCount - 1))
+                  
+                  // Calculate normalization factor to ensure total size matches
+                  let normalizationFactor = 1
+                  if (orderCount > 1) {
+                    let totalSkewFactor = 0
+                    for (let j = 0; j < orderCount; j++) {
+                      totalSkewFactor += Math.pow(sizeSkew, j / Math.max(1, orderCount - 1))
+                    }
+                    normalizationFactor = orderCount / totalSkewFactor
+                  }
+                  
+                  const baseSize = totalSize / orderCount
+                  const rawSize = baseSize * skewFactor * normalizationFactor
+                  
+                  // Round to coin-specific precision
+                  const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
+                  let roundedSize
+                  switch (baseCoin) {
+                    case 'DOGE':
+                      roundedSize = Math.round(rawSize) // Round to integer
+                      break
+                    case 'BTC':
+                      roundedSize = Math.round(rawSize * 100000) / 100000 // 5 decimal places
+                      break
+                    case 'ETH':
+                      roundedSize = Math.round(rawSize * 10000) / 10000 // 4 decimal places
+                      break
+                    case 'SOL':
+                      roundedSize = Math.round(rawSize * 100) / 100 // 2 decimal places
+                      break
+                    default:
+                      roundedSize = Math.round(rawSize * 1000000) / 1000000 // 6 decimal places
+                  }
+                  
+                  return `${roundedSize.toFixed(6)} ${state.sizeUnit} @ $${endPrice.toFixed(5)}`
+                })()}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Order Value:</span>
+              <span className="text-white">
+                {(() => {
+                  let totalSize = parseFloat(state.size || '0')
+                  const startPrice = parseFloat(state.scaleStartPrice || '0')
+                  const endPrice = parseFloat(state.scaleEndPrice || '0')
+                  
+                  // Convert USD to coin size if needed
+                  if (state.sizeUnit === 'USD' && typeof topCardPrice === 'number') {
+                    totalSize = totalSize / topCardPrice
+                  }
+                  
+                  if (totalSize <= 0 || startPrice <= 0 || endPrice <= 0) {
+                    return '$0.00'
+                  }
+                  
+                  // Calculate total value by summing all orders
+                  const orderCount = parseInt(state.scaleOrderCount || '1')
+                  const sizeSkew = parseFloat(state.scaleSizeSkew || '1')
+                  const priceStep = (endPrice - startPrice) / Math.max(1, orderCount - 1)
+                  
+                  let totalValue = 0
+                  for (let i = 0; i < orderCount; i++) {
+                    const price = startPrice + (priceStep * i)
+                    const skewFactor = Math.pow(sizeSkew, i / Math.max(1, orderCount - 1))
+                    const baseSize = totalSize / orderCount
+                    const rawSize = baseSize * skewFactor
+                    
+                    // Round to coin-specific precision
+                    const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
+                    let roundedSize
+                    switch (baseCoin) {
+                      case 'DOGE':
+                        roundedSize = Math.round(rawSize) // Round to integer
+                        break
+                      case 'BTC':
+                        roundedSize = Math.round(rawSize * 100000) / 100000 // 5 decimal places
+                        break
+                      case 'ETH':
+                        roundedSize = Math.round(rawSize * 10000) / 10000 // 4 decimal places
+                        break
+                      case 'SOL':
+                        roundedSize = Math.round(rawSize * 100) / 100 // 2 decimal places
+                        break
+                      default:
+                        roundedSize = Math.round(rawSize * 1000000) / 1000000 // 6 decimal places
+                    }
+                    
+                    totalValue += roundedSize * price
+                  }
+                  
+                  return `$${totalValue.toFixed(2)}`
+                })()}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Margin Required:</span>
+              <span className="text-white">
+                {(() => {
+                  let totalSize = parseFloat(state.size || '0')
+                  const startPrice = parseFloat(state.scaleStartPrice || '0')
+                  const endPrice = parseFloat(state.scaleEndPrice || '0')
+                  
+                  // Convert USD to coin size if needed
+                  if (state.sizeUnit === 'USD' && typeof topCardPrice === 'number') {
+                    totalSize = totalSize / topCardPrice
+                  }
+                  
+                  if (totalSize <= 0 || startPrice <= 0 || endPrice <= 0) {
+                    return '$0.00'
+                  }
+                  
+                  // Calculate total value by summing all orders
+                  const orderCount = parseInt(state.scaleOrderCount || '1')
+                  const sizeSkew = parseFloat(state.scaleSizeSkew || '1')
+                  const priceStep = (endPrice - startPrice) / Math.max(1, orderCount - 1)
+                  
+                  let totalValue = 0
+                  for (let i = 0; i < orderCount; i++) {
+                    const price = startPrice + (priceStep * i)
+                    const skewFactor = Math.pow(sizeSkew, i / Math.max(1, orderCount - 1))
+                    const baseSize = totalSize / orderCount
+                    const rawSize = baseSize * skewFactor
+                    
+                    // Round to coin-specific precision
+                    const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
+                    let roundedSize
+                    switch (baseCoin) {
+                      case 'DOGE':
+                        roundedSize = Math.round(rawSize) // Round to integer
+                        break
+                      case 'BTC':
+                        roundedSize = Math.round(rawSize * 100000) / 100000 // 5 decimal places
+                        break
+                      case 'ETH':
+                        roundedSize = Math.round(rawSize * 10000) / 10000 // 4 decimal places
+                        break
+                      case 'SOL':
+                        roundedSize = Math.round(rawSize * 100) / 100 // 2 decimal places
+                        break
+                      default:
+                        roundedSize = Math.round(rawSize * 1000000) / 1000000 // 6 decimal places
+                    }
+                    
+                    totalValue += roundedSize * price
+                  }
+                  
+                  const margin = totalValue / state.leverage
+                  return `$${margin.toFixed(2)}`
+                })()}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Fees:</span>
+              <span className="text-white">0.0450% / 0.0150%</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Liquidation Price:</span>
+              <span className="text-white">
+                {(() => {
+                  if (state.size && typeof topCardPrice === 'number') {
+                    // Calculate liquidation price based on order parameters
+                    const entryPrice = state.orderType === 'limit' && state.limitPrice 
+                      ? parseFloat(state.limitPrice) 
+                      : topCardPrice // Use current price for market orders
+                    const leverage = state.leverage
+                    
+                    const liquidationPrice = calculateLiquidationPrice(entryPrice, leverage, state.side, state.selectedCoin)
+                    return `$${liquidationPrice.toFixed(2)}`
+                  }
+                  return 'N/A'
+                })()}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Order Value:</span>
+              <span className="text-white">
+                {(() => {
+                  // Check if size is valid
+                  const sizeValue = parseFloat(state.size || '0')
+                  const isValidSize = !isNaN(sizeValue) && sizeValue > 0
+                  
+                  if (state.size && state.sizeUnit === 'USD' && isValidSize) {
+                    return `$${sizeValue.toFixed(2)}`
+                  } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number' && isValidSize) {
+                    const value = sizeValue * topCardPrice
+                    return `$${value.toFixed(2)}`
+                  }
+                  return 'N/A'
+                })()}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Margin Required:</span>
+              <span className="text-white">
+                {(() => {
+                  if (state.size && state.sizeUnit === 'USD') {
+                    const margin = parseFloat(state.size) / state.leverage
+                    return `$${margin.toFixed(2)}`
+                  } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number') {
+                    const value = parseFloat(state.size) * topCardPrice
+                    const margin = value / state.leverage
+                    return `$${margin.toFixed(2)}`
+                  }
+                  return 'N/A'
+                })()}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Slippage:</span>
+              <span className="text-white">
+                {state.orderType === 'market' ? 'Est: 0.1% / Max: 0.5%' : 'Est: 0% / Max: 0.1%'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Fees:</span>
+              <span className="text-green-400 flex items-center gap-1">
+                <TrendingUp size={14} />
+                {(() => {
+                  if (state.size && state.sizeUnit === 'USD') {
+                    const makerFee = parseFloat(state.size) * 0.0001 // 0.01% maker fee
+                    const takerFee = parseFloat(state.size) * 0.0002 // 0.02% taker fee
+                    return `${(makerFee * 100).toFixed(4)}% / ${(takerFee * 100).toFixed(4)}%`
+                  } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number') {
+                    const value = parseFloat(state.size) * topCardPrice
+                    const makerFee = value * 0.0001
+                    const takerFee = value * 0.0002
+                    return `${(makerFee * 100).toFixed(4)}% / ${(takerFee * 100).toFixed(4)}%`
+                  }
+                  return '0.01% / 0.02%'
+                })()}
+              </span>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Order Confirmation Popup */}
