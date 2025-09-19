@@ -22,9 +22,11 @@ Watch these demonstration videos to understand the functionality:
 
 - **[Scale Order Demo](https://www.loom.com/share/5feaa6e04e904bc5bd75d53d2f387994?sid=c364f19f-f0f5-46b6-bb41-9dafb2a5d4b6)** - Learn how to place multiple orders at different price levels with size skew
 
+## 🔄 Recent Updates
+
 - **[Precision & Decimal Fix Demo](https://drive.google.com/file/d/1jZEvcNyBDtyQbFbmB4gEG_Gkl6RDAIIf/view?usp=drive_link)** - See the latest improvements for price and size decimal precision handling
 
-## 🔄 Recent Updates
+
 
 ### Precision & Decimal Handling Improvements
 - **Enhanced Price Precision**: Implemented proper `pxDecimals` validation for all order types
