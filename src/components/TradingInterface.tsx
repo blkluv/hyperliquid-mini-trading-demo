@@ -5,6 +5,7 @@ import { useTrading } from '../hooks/useTrading'
 import { usePriceSubscription } from '../hooks/usePriceSubscription'
 import OrderResponsePopup, { OrderResponse } from './OrderResponsePopup'
 import { CONFIG } from '../config/config'
+import { TradingConfigHelper } from '../config/tradingConfig'
 import { hyperliquidService } from '../services/hyperliquidService'
 
 const TradingInterface: React.FC = () => {
@@ -219,22 +220,16 @@ const TradingInterface: React.FC = () => {
 
   // Generic coin-specific rounding function
   const roundCoinSize = (rawSize: number, baseCoin: string): number => {
-    switch (baseCoin) {
-      case 'DOGE':
-        // DOGE: Round to integer
-        return roundDown(rawSize)
-      case 'BTC':
-        // BTC: Round to 0.00001 (5 decimal places)
-        return roundDown(Math.round(rawSize * 100000) / 100000)
-      case 'ETH':
-        // ETH: Round to 0.0001 (4 decimal places)
-        return roundDown(Math.round(rawSize * 10000) / 10000)
-      case 'SOL':
-        // SOL: Round to 0.01 (2 decimal places)
-        return roundDown(Math.round(rawSize * 100) / 100)
-      default:
-        // Default: Round to 0.000001 (6 decimal places)
-        return roundDown(Math.round(rawSize * 1000000) / 1000000)
+    const coinKey = `${baseCoin}-PERP`
+    const precision = TradingConfigHelper.getRoundingPrecision(coinKey)
+    
+    if (precision === 0) {
+      // Round to integer
+      return roundDown(rawSize)
+    } else {
+      // Round to specified decimal places
+      const multiplier = Math.pow(10, precision)
+      return roundDown(Math.round(rawSize * multiplier) / multiplier)
     }
   }
 
@@ -404,33 +399,25 @@ const TradingInterface: React.FC = () => {
         errors.push('Order quantity must be greater than 0')
       } else {
         // Check minimum order size based on coin
-        const minCoinSizes: { [key: string]: number } = {
-          'DOGE-PERP': 1,
-          'BTC-PERP': 0.00001,
-          'ETH-PERP': 0.0001,
-          'SOL-PERP': 0.1,
-          'AVAX-PERP': 0.1
-        }
-        
-        const coinMinSize = minCoinSizes[state.selectedCoin] || 0.001
+        const coinMinSize = TradingConfigHelper.getMinOrderSize(state.selectedCoin)
         if (sizeValue < coinMinSize) {
           errors.push(`Minimum order size is ${coinMinSize} ${state.selectedCoin?.replace('-PERP', '') || 'tokens'}`)
         }
       }
       
       if (errors.length === 0) {
-        // 3. Check minimum order value (should be > 10 USD)
+        // 3. Check minimum order value
         const orderValue = state.sizeUnit === 'USD' 
           ? sizeValue  // For USD, order value is the size itself
           : sizeValue * (currentPrice || 0)  // For coin units, multiply by price
         
-        if (orderValue > 0 && orderValue < 10) {
-          errors.push('Minimum order value is $10 USD')
+        if (orderValue > 0 && !TradingConfigHelper.validateOrderValue(orderValue)) {
+          errors.push(`Minimum order value is $${TradingConfigHelper.getMinOrderValueUsd()} USD`)
         }
         
         // 5. UX Warnings for extreme values
-        if (orderValue > 1000000) {
-          errors.push('Warning: Order value is extremely large (>$1M)')
+        if (orderValue > TradingConfigHelper.getMaxOrderValueWarningUsd()) {
+          errors.push(`Warning: Order value is extremely large (>$${TradingConfigHelper.getMaxOrderValueWarningUsd() / 1000000}M)`)
         }
         if (orderValue > 0 && orderValue < 1) {
           errors.push('Warning: Order value is extremely small (<$1)')
@@ -613,14 +600,14 @@ const TradingInterface: React.FC = () => {
             if (state.sizeUnit === 'USD') {
               // For USD mode, each sub-order gets equal USD value
               const subOrderUsdValue = totalSize / orderCount
-              if (subOrderUsdValue < 10) {
+              if (!TradingConfigHelper.validateOrderValue(subOrderUsdValue, true)) {
                 errors.push(`Scale sub-order value too low: $${subOrderUsdValue.toFixed(2)} (minimum: $10.00)`)
               }
             } else {
               // For coin mode, calculate USD value using average price
               const subOrderSize = totalSize / orderCount
               const subOrderUsdValue = subOrderSize * avgPrice
-              if (subOrderUsdValue < 10) {
+              if (!TradingConfigHelper.validateOrderValue(subOrderUsdValue, true)) {
                 errors.push(`Scale sub-order value too low: $${subOrderUsdValue.toFixed(2)} (minimum: $10.00)`)
               }
             }
@@ -699,7 +686,7 @@ const TradingInterface: React.FC = () => {
                 ? subOrderUsdValue  // USD mode: use original USD value
                 : roundedSubOrderSize * (currentPrice || 0)  // Coin mode: recalculate with rounded size
               
-              if (roundedSubOrderUsdValue < 10) {
+              if (!TradingConfigHelper.validateOrderValue(roundedSubOrderUsdValue, true)) {
                 errors.push(`TWAP sub-order value too low: $${roundedSubOrderUsdValue.toFixed(2)} (minimum: $10.00)`)
               }
             }
@@ -742,19 +729,11 @@ const TradingInterface: React.FC = () => {
                   errors.push('Unable to validate TWAP sub-order value without market price data')
                 } else {
                   const subOrderUsdValue = totalUsdValue / numberOfOrders
-                  if (subOrderUsdValue < 10) {
+                  if (!TradingConfigHelper.validateOrderValue(subOrderUsdValue, true)) {
                     errors.push(`Each TWAP sub-order must be at least $10. Current plan is $${subOrderUsdValue.toFixed(2)}.`)
                   }
 
-                  const minCoinSizes: { [key: string]: number } = {
-                    'DOGE-PERP': 1,
-                    'BTC-PERP': 0.00001, // Updated from 0.0001
-                    'ETH-PERP': 0.0001,  // Updated from 0.001
-                    'SOL-PERP': 0.1,
-                    'AVAX-PERP': 0.1
-                  }
-
-                  const coinMinSize = minCoinSizes[state.selectedCoin] || 0
+                  const coinMinSize = TradingConfigHelper.getMinOrderSize(state.selectedCoin)
                   if (coinMinSize > 0) {
                     let subOrderCoinSize: number | null = null
 
@@ -830,12 +809,9 @@ const TradingInterface: React.FC = () => {
             if (state.scaleOrderCount && state.scaleOrderCount.trim() !== '') {
               const orderCount = parseInt(state.scaleOrderCount.trim())
               if (!isNaN(orderCount) && orderCount > 0) {
-                // Higher leverage with more orders increases risk
-                if (orderCount > 10 && state.leverage > 10) {
-                  errors.push('Maximum 10x leverage allowed for scale orders with more than 10 orders')
-                }
-                if (orderCount > 15 && state.leverage > 5) {
-                  errors.push('Maximum 5x leverage allowed for scale orders with more than 15 orders')
+                const maxLeverage = TradingConfigHelper.getMaxLeverageForScaleOrders(orderCount)
+                if (state.leverage > maxLeverage) {
+                  errors.push(`Maximum ${maxLeverage}x leverage allowed for scale orders with ${orderCount} orders`)
                 }
               }
             }
@@ -858,11 +834,10 @@ const TradingInterface: React.FC = () => {
                 const totalMinutes = (hours * 60) + minutes
                 
                 // Longer TWAP periods require lower leverage
-                if (totalMinutes > 720 && state.leverage > 10) { // > 12 hours
-                  errors.push('Maximum 10x leverage for TWAP orders longer than 12 hours')
-                }
-                if (totalMinutes > 1440 && state.leverage > 5) { // > 24 hours
-                  errors.push('Maximum 5x leverage for TWAP orders longer than 24 hours')
+                const maxLeverage = TradingConfigHelper.getMaxLeverageForTwapOrders(totalMinutes)
+                if (state.leverage > maxLeverage) {
+                  const hours = Math.floor(totalMinutes / 60)
+                  errors.push(`Maximum ${maxLeverage}x leverage for TWAP orders longer than ${hours} hours`)
                 }
               }
             }
@@ -891,11 +866,9 @@ const TradingInterface: React.FC = () => {
         }
         
         // Minimum margin requirements based on leverage
-        if (state.leverage >= 20 && requiredMargin < 100) {
-          errors.push('Minimum margin required for 20x+ leverage is $100')
-        }
-        if (state.leverage >= 30 && requiredMargin < 200) {
-          errors.push('Minimum margin required for 30x+ leverage is $200')
+        const minMargin = TradingConfigHelper.getMinMarginRequirement(state.leverage)
+        if (minMargin > 0 && requiredMargin < minMargin) {
+          errors.push(`Minimum margin required for ${state.leverage}x+ leverage is $${minMargin}`)
         }
         if (state.leverage >= 40 && requiredMargin < 500) {
           errors.push('Minimum margin required for 40x+ leverage is $500')
@@ -922,14 +895,14 @@ const TradingInterface: React.FC = () => {
       if (touchedFields.has('takeProfitGain') && state.takeProfitGain && state.takeProfitGain.trim() !== '') {
         const tpGain = parseFloat(state.takeProfitGain.trim())
         if (isNaN(tpGain) || tpGain <= 0 || tpGain > 1000) {
-          errors.push('Take profit gain must be between 0.01% and 1000%')
+          errors.push(`Take profit gain must be between 0.01% and ${1000}%`)
         }
       }
       
       if (touchedFields.has('stopLossLoss') && state.stopLossLoss && state.stopLossLoss.trim() !== '') {
         const slLoss = parseFloat(state.stopLossLoss.trim())
         if (isNaN(slLoss) || slLoss <= 0 || slLoss > 100) {
-          errors.push('Stop loss must be between 0.01% and 100%')
+          errors.push(`Stop loss must be between 0.01% and ${100}%`)
         }
       }
     }
@@ -2706,13 +2679,13 @@ const TradingInterface: React.FC = () => {
                 <TrendingUp size={14} />
                 {(() => {
                   if (state.size && state.sizeUnit === 'USD') {
-                    const makerFee = parseFloat(state.size) * 0.0001 // 0.01% maker fee
-                    const takerFee = parseFloat(state.size) * 0.0002 // 0.02% taker fee
+                    const makerFee = TradingConfigHelper.calculateMakerFee(parseFloat(state.size))
+                    const takerFee = TradingConfigHelper.calculateTakerFee(parseFloat(state.size))
                     return `${(makerFee * 100).toFixed(4)}% / ${(takerFee * 100).toFixed(4)}%`
                   } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number') {
                     const value = parseFloat(state.size) * topCardPrice
-                    const makerFee = value * 0.0001
-                    const takerFee = value * 0.0002
+                    const makerFee = TradingConfigHelper.calculateMakerFee(value)
+                    const takerFee = TradingConfigHelper.calculateTakerFee(value)
                     return `${(makerFee * 100).toFixed(4)}% / ${(takerFee * 100).toFixed(4)}%`
                   }
                   return '0.01% / 0.02%'

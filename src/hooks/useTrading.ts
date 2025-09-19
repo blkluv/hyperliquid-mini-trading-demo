@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { hyperliquidService, LeverageParams, OrderParams } from '../services/hyperliquidService'
 import { CONFIG } from '../config/config'
+import { TradingConfigHelper } from '../config/tradingConfig'
 
 export interface TradingState {
   selectedCoin: string
@@ -101,8 +102,9 @@ export const useTrading = () => {
                 }
               )
               
-              // Auto close after 5 seconds
-              setTimeout(() => notification.close(), 5000)
+              // Auto close after configured duration
+              const timingConfig = TradingConfigHelper.getTimingConfig()
+              setTimeout(() => notification.close(), timingConfig.NOTIFICATION_DURATION)
             }
           }
         }
@@ -121,7 +123,7 @@ export const useTrading = () => {
             completedTasks.forEach(taskId => newMap.delete(taskId))
             return newMap
           })
-        }, 30000) // Keep completed tasks visible for 30 seconds
+        }, TradingConfigHelper.getTimingConfig().TASK_CLEANUP_DELAY) // Keep completed tasks visible for 30 seconds
       }
     } catch (error) {
       console.error('Failed to monitor TWAP tasks:', error)
@@ -131,7 +133,8 @@ export const useTrading = () => {
   // Start monitoring when there are active tasks
   useEffect(() => {
     if (activeTwapTasks.size > 0) {
-      const interval = setInterval(monitorTwapTasks, 2000) // Check every 2 seconds
+      const timingConfig = TradingConfigHelper.getTimingConfig()
+      const interval = setInterval(monitorTwapTasks, timingConfig.TWAP_MONITOR_INTERVAL)
       return () => clearInterval(interval)
     }
   }, [activeTwapTasks.size, monitorTwapTasks])
