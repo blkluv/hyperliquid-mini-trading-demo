@@ -897,15 +897,11 @@ app.post('/api/update-leverage', async (req, res) => {
     const assetId = await getAssetId(coin)
     console.log(`📋 Using asset ID ${assetId} for coin ${coin}`)
     
-    const leverageParams = {
-      coin: coin,
+    const result = await exchangeClient.updateLeverage({
+      asset: assetId,
       leverage: leverageNum,
-      leverageMode: leverageMode
-    }
-    
-    console.log('🎯 SDK updateLeverage parameters:', JSON.stringify(leverageParams, null, 2))
-    
-    const result = await exchangeClient.updateLeverage(leverageParams)
+      isCross: leverageMode === 'cross'
+    })
     
     console.log('✅ Leverage update successful:', {
       coin,
@@ -935,11 +931,19 @@ app.post('/api/update-leverage', async (req, res) => {
       userMessage = `API request failed: ${error.message}`
     }
     
+    console.log('🎯 Error analysis:', {
+      isLeverageTypeSwitch: error.message.includes('Cannot switch leverage type'),
+      hasOpenPosition: error.message.includes('open position'),
+      suggestion: error.message.includes('Cannot switch leverage type') 
+        ? 'Close all positions first, or only update leverage multiplier without changing margin mode'
+        : 'Check parameter format and account status'
+    })
+    
     console.log('🔍 Detailed error information:', {
       errorMessage: error.message,
       errorStack: error.stack,
       requestBody: req.body,
-      assetId: await getAssetId(coin).catch(() => 'Failed to get asset ID')
+      assetId: await getAssetId(req.body.coin).catch(() => 'Failed to get asset ID')
     })
     
     res.status(500).json({ 

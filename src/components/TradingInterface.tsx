@@ -2826,25 +2826,58 @@ const TradingInterface: React.FC = () => {
       {/* Toast Notifications */}
       <Toaster
         position="top-right"
+        reverseOrder={false}
+        gutter={8}
+        containerStyle={{
+          top: 20,
+          right: 20,
+        }}
         toastOptions={{
           duration: 4000,
           style: {
             background: '#1e293b',
             color: '#ffffff',
             border: '1px solid #374151',
+            borderRadius: '8px',
+            padding: '12px 16px',
+            cursor: 'pointer',
+            userSelect: 'none',
+            transition: 'all 0.3s ease',
           },
           success: {
+            duration: 5000,
             style: {
               background: '#065f46',
               color: '#ffffff',
               border: '1px solid #10b981',
+              borderRadius: '8px',
+              padding: '12px 16px',
+              cursor: 'pointer',
+              userSelect: 'none',
             },
           },
           error: {
+            duration: 6000,
             style: {
               background: '#7f1d1d',
               color: '#ffffff',
               border: '1px solid #ef4444',
+              borderRadius: '8px',
+              padding: '12px 16px',
+              cursor: 'pointer',
+              userSelect: 'none',
+            },
+          },
+          loading: {
+            duration: Infinity,
+            style: {
+              background: '#1e293b',
+              color: '#14b8a6',
+              border: '1px solid #14b8a6',
+              borderRadius: '8px',
+              padding: '12px 16px',
+              cursor: 'pointer',
+              userSelect: 'none',
             },
           },
         }}

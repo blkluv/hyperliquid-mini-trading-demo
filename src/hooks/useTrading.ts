@@ -977,10 +977,14 @@ export const useTrading = () => {
           }
         }
       }
-      return `0.00000 ${coin}`
+      // Return coin name without -PERP suffix for consistency
+      const coinName = coin.replace('-PERP', '')
+      return `0.00000 ${coinName}`
     } catch (error) {
       console.error('Failed to get position for coin:', error)
-      return `0.00000 ${coin}`
+      // Return coin name without -PERP suffix for consistency
+      const coinName = coin.replace('-PERP', '')
+      return `0.00000 ${coinName}`
     }
   }, [])
 
