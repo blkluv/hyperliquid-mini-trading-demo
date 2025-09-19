@@ -14,10 +14,13 @@ Here's what the trading interface looks like:
 
 Watch these demonstration videos to understand the functionality:
 
-- **[Scale Order Demo](https://www.loom.com/share/5feaa6e04e904bc5bd75d53d2f387994?sid=c364f19f-f0f5-46b6-bb41-9dafb2a5d4b6)** - Learn how to place multiple orders at different price levels with size skew
-- **[TWAP Order Demo](https://www.loom.com/share/f113a7fc83764f188b9828587bd3aaf6?sid=4f8c6cbf-881f-4cd3-9fbd-d8a99e0e269c)** - See how to execute orders over time to reduce market impact
-- **[Limit Order Demo](https://www.loom.com/share/8392967a459e47fea42ba7a4d8c1fbc4?sid=dca3765e-0c26-4b68-ac4d-11dc3c2a3f4c)** - Understand how to place orders at specific price levels
 - **[Market Order Demo](https://www.loom.com/share/47cff0dc410b4dcc86b35a1323d59077?sid=a79e74a0-07de-46c6-95a8-24ba1c8c859f)** - See how to execute orders immediately at current market price
+
+- **[Limit Order Demo](https://www.loom.com/share/8392967a459e47fea42ba7a4d8c1fbc4?sid=dca3765e-0c26-4b68-ac4d-11dc3c2a3f4c)** - Understand how to place orders at specific price levels
+
+- **[TWAP Order Demo](https://www.loom.com/share/f113a7fc83764f188b9828587bd3aaf6?sid=4f8c6cbf-881f-4cd3-9fbd-d8a99e0e269c)** - See how to execute orders over time to reduce market impact
+
+- **[Scale Order Demo](https://www.loom.com/share/5feaa6e04e904bc5bd75d53d2f387994?sid=c364f19f-f0f5-46b6-bb41-9dafb2a5d4b6)** - Learn how to place multiple orders at different price levels with size skew
 
 ## ✨ Features
 
