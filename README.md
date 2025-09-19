@@ -2,26 +2,6 @@
 
 A simple trading interface defor Hyperliquid that supports Market, Limit, Scale, and TWAP orders with advanced leverage and margin mode controls, real-time price updates, and sophisticated order management.
 
-## 📊 Project Status
-
-| Component | Status | Coverage | Description |
-|-----------|--------|----------|-------------|
-| **Core Trading** | ✅ Complete | 100% | Market, Limit, Scale, TWAP orders |
-| **Leverage Control** | ✅ Complete | 100% | Dynamic leverage updates (1x-9x) |
-| **Margin Modes** | ✅ Complete | 100% | Isolated/Cross margin switching |
-| **Real-time Data** | ✅ Complete | 95% | Price feeds, account data, positions |
-| **Order Management** | ✅ Complete | 100% | TWAP monitoring, order history |
-| **Configuration** | ✅ Complete | 100% | Centralized config management |
-| **Testing** | ✅ Complete | 94% | 35+ test cases, comprehensive coverage |
-| **UI/UX** | ✅ Complete | 100% | Responsive design, notifications |
-| **Documentation** | ✅ Complete | 100% | Comprehensive README and guides |
-
-### 🎯 **Recent Updates**
-- ✅ **Configuration Management**: Centralized all hardcoded values
-- ✅ **Testing Suite**: Added comprehensive test coverage (35+ tests)
-- ✅ **Documentation**: Complete README with setup and testing guides
-- ✅ **Code Quality**: TypeScript, linting, and error handling
-- ✅ **UI Improvements**: Toast notifications, coin switching, real-time updates
 
 ## 🖼️ Interface Preview
 
@@ -82,6 +62,21 @@ Watch these demonstration videos to understand the functionality:
 - **Build Tool**: Vite
 - **Testing**: Jest with comprehensive test coverage
 - **State Management**: React hooks with custom trading logic
+
+
+## 📊 Project Status
+
+| Component | Status | Coverage | Description |
+|-----------|--------|----------|-------------|
+| **Core Trading** | ✅ Complete | 100% | Market, Limit, Scale, TWAP orders |
+| **Leverage Control** | ✅ Complete | 100% | Dynamic leverage updates (1x-9x) |
+| **Margin Modes** | ✅ Complete | 100% | Isolated/Cross margin switching |
+| **Real-time Data** | ✅ Complete | 95% | Price feeds, account data, positions |
+| **Order Management** | ✅ Complete | 100% | TWAP monitoring, order history |
+| **Configuration** | ✅ Complete | 100% | Centralized config management |
+| **Testing** | ✅ Complete | 94% | 35+ test cases, comprehensive coverage |
+| **UI/UX** | ✅ Complete | 100% | Responsive design, notifications |
+| **Documentation** | ✅ Complete | 100% | Comprehensive README and guides |
 
 ## 🚀 Quick Start
 
