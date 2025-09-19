@@ -432,7 +432,7 @@ const TradingInterface: React.FC = () => {
           }
         } catch (error) {
           console.error('Error validating order size:', error)
-          // Continue with original validation if precision validation fails
+          errors.push('Order size validation failed')
         }
       }
       
@@ -2053,6 +2053,18 @@ const TradingInterface: React.FC = () => {
                     
                     for (let i = 0; i < orderCount; i++) {
                       const rawPrice = startPrice + (priceStep * i)
+                      
+                      // Validate price before formatting
+                      if (isNaN(rawPrice) || !isFinite(rawPrice) || rawPrice <= 0) {
+                        orders.push(
+                          <div key={i} className="flex justify-between text-xs">
+                            <span className="text-gray-300">Order {i + 1}:</span>
+                            <span className="text-red-400">Invalid price</span>
+                          </div>
+                        )
+                        continue
+                      }
+                      
                       const price = formatHyperliquidPriceSync(rawPrice, state.selectedCoin)
                       // Calculate size based on size skew
                       // Size skew determines the ratio between end and start order sizes

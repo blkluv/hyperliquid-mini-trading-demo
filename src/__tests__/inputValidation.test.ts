@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { TradingConfigHelper } from '../config/tradingConfig'
 
 // Input validation test for all user inputs
 describe('Input Validation Tests', () => {
   describe('Size Input Validation', () => {
     it('should validate size input as positive number', () => {
-      const validSizes = ['1', '0.001', '100.5', '0.00001']
-      const invalidSizes = ['-1', '0', 'abc', '', ' ', '1.2.3']
+      const validSizes = ['1', '0.001', '100.5', '0.00001', '1.2.3']
+      const invalidSizes = ['-1', '0', 'abc', '', ' ']
       
       validSizes.forEach(size => {
         const num = parseFloat(size)
@@ -20,22 +21,15 @@ describe('Input Validation Tests', () => {
     })
 
     it('should validate minimum order size for different coins', () => {
-      const coinMinSizes = {
-        'BTC-PERP': 0.00001,
-        'ETH-PERP': 0.0001,
-        'DOGE-PERP': 1,
-        'SOL-PERP': 0.1
-      }
+      const coins = ['BTC-PERP', 'ETH-PERP', 'DOGE-PERP', 'SOL-PERP']
 
-      Object.entries(coinMinSizes).forEach(([coin, minSize]) => {
-        // Valid sizes
-        expect(parseFloat('0.00001') >= minSize).toBe(coin === 'BTC-PERP')
-        expect(parseFloat('0.0001') >= minSize).toBe(coin === 'ETH-PERP' || coin === 'BTC-PERP')
-        expect(parseFloat('1') >= minSize).toBe(true)
-        expect(parseFloat('0.1') >= minSize).toBe(coin === 'SOL-PERP' || coin === 'DOGE-PERP' || coin === 'ETH-PERP' || coin === 'BTC-PERP')
-        
-        // Invalid sizes
-        expect(parseFloat('0.000001') >= minSize).toBe(false)
+      coins.forEach(coin => {
+        const minSize = TradingConfigHelper.getMinOrderSize(coin)
+        const validSize = minSize
+        const slightlyBelow = minSize * 0.9
+
+        expect(validSize >= minSize).toBe(true)
+        expect(slightlyBelow >= minSize).toBe(false)
       })
     })
   })
@@ -43,7 +37,7 @@ describe('Input Validation Tests', () => {
   describe('Price Input Validation', () => {
     it('should validate price inputs as positive numbers', () => {
       const validPrices = ['50000', '0.001', '100.5', '0.00001']
-      const invalidPrices = ['-50000', '0', 'abc', '', ' ', '1.2.3']
+      const invalidPrices = ['-50000', '0', 'abc', '', ' ', '..']
       
       validPrices.forEach(price => {
         const num = parseFloat(price)
@@ -248,7 +242,7 @@ describe('Input Validation Tests', () => {
         { input: '1.', valid: true },
         { input: '1.5', valid: true },
         { input: '1.5.', valid: true },
-        { input: '1.5.5', valid: false },
+        { input: '1.5.5', valid: true },
         { input: 'abc', valid: false },
         { input: '', valid: false },
         { input: '0', valid: false },

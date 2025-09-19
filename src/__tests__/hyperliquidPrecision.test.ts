@@ -1,10 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { 
-  HyperliquidPrecision, 
-  formatHyperliquidPrice, 
-  formatHyperliquidSize, 
-  validateHyperliquidPrice, 
-  validateHyperliquidSize,
+  HyperliquidPrecision,
   formatHyperliquidPriceSync,
   formatHyperliquidSizeSync,
   validateHyperliquidPriceSync,
@@ -152,8 +148,8 @@ describe('HyperliquidPrecision', () => {
   describe('edge cases', () => {
     it('should handle zero values', () => {
       const assetInfo = { szDecimals: 2, pxDecimals: 2, isPerp: true }
-      // 零值应该被允许，但价格不能为零
-      expect(() => HyperliquidPrecision.formatPrice(0, assetInfo)).toThrow('Invalid price value')
+      // 零值价格现在返回 '0' 而不是抛出错误
+      expect(HyperliquidPrecision.formatPrice(0, assetInfo)).toBe('0')
       // 大小可以为零
       const result = HyperliquidPrecision.formatSize(0, 2)
       expect(result).toBe('0.00')
@@ -161,13 +157,15 @@ describe('HyperliquidPrecision', () => {
 
     it('should handle NaN values', () => {
       const assetInfo = { szDecimals: 2, pxDecimals: 2, isPerp: true }
-      expect(() => HyperliquidPrecision.formatPrice(NaN, assetInfo)).toThrow('Invalid price value')
+      // NaN 价格现在返回 '0' 而不是抛出错误
+      expect(HyperliquidPrecision.formatPrice(NaN, assetInfo)).toBe('0')
       expect(() => HyperliquidPrecision.formatSize(NaN, 2)).toThrow('Invalid size value')
     })
 
     it('should handle infinity values', () => {
       const assetInfo = { szDecimals: 2, pxDecimals: 2, isPerp: true }
-      expect(() => HyperliquidPrecision.formatPrice(Infinity, assetInfo)).toThrow('Invalid price value')
+      // 无穷大价格现在返回 '0' 而不是抛出错误
+      expect(HyperliquidPrecision.formatPrice(Infinity, assetInfo)).toBe('0')
       expect(() => HyperliquidPrecision.formatSize(Infinity, 2)).toThrow('Invalid size value')
     })
   })

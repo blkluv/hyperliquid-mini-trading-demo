@@ -22,6 +22,20 @@ Watch these demonstration videos to understand the functionality:
 
 - **[Scale Order Demo](https://www.loom.com/share/5feaa6e04e904bc5bd75d53d2f387994?sid=c364f19f-f0f5-46b6-bb41-9dafb2a5d4b6)** - Learn how to place multiple orders at different price levels with size skew
 
+- **[Precision & Decimal Fix Demo](https://drive.google.com/file/d/1jZEvcNyBDtyQbFbmB4gEG_Gkl6RDAIIf/view?usp=drive_link)** - See the latest improvements for price and size decimal precision handling
+
+## 🔄 Recent Updates
+
+### Precision & Decimal Handling Improvements
+- **Enhanced Price Precision**: Implemented proper `pxDecimals` validation for all order types
+- **Size Decimal Validation**: Added `szDecimals` support with dynamic precision from API metadata
+- **Smart Error Messages**: Improved validation feedback with specific error messages for different coins
+- **DOGE Coin Support**: Fixed integer-only validation for DOGE (szDecimals: 0)
+- **Scale Order Precision**: Enhanced sub-order price and size calculations with proper decimal handling
+- **TWAP Order Improvements**: Updated sub-order size distribution using dynamic `szDecimals`
+- **Current Position Display**: Fixed position size formatting to use correct decimal precision
+- **Input Validation**: Added real-time validation for all 4 order types with disabled submit buttons for invalid inputs
+
 ## ✨ Features
 
 - **Order Types**: Market, Limit, Scale, TWAP orders with advanced validation

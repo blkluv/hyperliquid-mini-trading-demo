@@ -34,7 +34,7 @@ export class HyperliquidPrecision {
    */
   static formatPrice(price: number, assetInfo: AssetInfo): string {
     if (isNaN(price) || !isFinite(price) || price <= 0) {
-      throw new Error('Invalid price value')
+      return '0'
     }
     
     // 计算有效数字
@@ -133,7 +133,8 @@ export class HyperliquidPrecision {
       if (szDecimals === 0) {
         return `${coin} only accepts whole numbers (no decimals). Please enter a whole number like ${Math.round(size)}`
       } else {
-        return `${coin} only accepts up to ${szDecimals} decimal place${szDecimals === 1 ? '' : 's'}. Please round to ${szDecimals} decimal place${szDecimals === 1 ? '' : 's'}`
+        const pluralSuffix = szDecimals === 1 ? '' : 's'
+        return `${coin} only accepts up to ${szDecimals} decimal place${pluralSuffix}. Please round to ${szDecimals} decimal place${pluralSuffix}`
       }
     }
 
