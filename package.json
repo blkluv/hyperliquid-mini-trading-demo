@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@nktkas/hyperliquid": "^0.22.1",
+    "dotenv": "^17.2.2",
     "hyperliquid": "^1.7.7",
     "lucide-react": "^0.263.1",
     "node-fetch": "^3.3.2",

@@ -1,6 +1,6 @@
 # Hyperliquid Trading Interface
 
-A comprehensive trading interface for Hyperliquid that supports Market, Limit, Scale, and TWAP orders with advanced leverage and margin mode controls, real-time price updates, and sophisticated order management.
+A simple trading interface defor Hyperliquid that supports Market, Limit, Scale, and TWAP orders with advanced leverage and margin mode controls, real-time price updates, and sophisticated order management.
 
 ## 📊 Project Status
 
@@ -22,6 +22,23 @@ A comprehensive trading interface for Hyperliquid that supports Market, Limit, S
 - ✅ **Documentation**: Complete README with setup and testing guides
 - ✅ **Code Quality**: TypeScript, linting, and error handling
 - ✅ **UI Improvements**: Toast notifications, coin switching, real-time updates
+
+## 🖼️ Interface Preview
+
+Here's what the trading interface looks like:
+
+![Hyperliquid Trading Interface](https://via.placeholder.com/800x600/1e293b/14b8a6?text=Hyperliquid+Trading+Interface)
+
+*The interface features a dark theme with teal/green accents, showing Margin Mode (Cross), Leverage control (9x with risk indicator), Market/Limit order selection, Buy/Sell buttons, and comprehensive order parameters.*
+
+## 📹 Demo Videos
+
+Watch these demonstration videos to understand the functionality:
+
+- **[Scale Order Demo](https://www.loom.com/share/5feaa6e04e904bc5bd75d53d2f387994?sid=c364f19f-f0f5-46b6-bb41-9dafb2a5d4b6)** - Learn how to place multiple orders at different price levels with size skew
+- **[TWAP Order Demo](https://www.loom.com/share/f113a7fc83764f188b9828587bd3aaf6?sid=4f8c6cbf-881f-4cd3-9fbd-d8a99e0e269c)** - See how to execute orders over time to reduce market impact
+- **[Limit Order Demo](https://www.loom.com/share/8392967a459e47fea42ba7a4d8c1fbc4?sid=dca3765e-0c26-4b68-ac4d-11dc3c2a3f4c)** - Understand how to place orders at specific price levels
+- **[Market Order Demo](https://www.loom.com/share/47cff0dc410b4dcc86b35a1323d59077?sid=a79e74a0-07de-46c6-95a8-24ba1c8c859f)** - See how to execute orders immediately at current market price
 
 ## Features
 
@@ -90,31 +107,56 @@ npm --version
 node --version
 ```
 
-### 2. Configure Environment
+### 2. Configure Environment Variables
 
-#### Option A: Using Demo Configuration (Recommended for Testing)
-The project includes pre-configured demo settings for immediate testing:
+#### 🔐 Secure Setup (Recommended)
+
+**⚠️ IMPORTANT:** Never commit your private keys to version control!
+
+1. **Copy the environment template:**
+   ```bash
+   cp .env.example .env
+   ```
+
+2. **Edit your `.env` file:**
+   ```bash
+   nano .env
+   # or
+   code .env
+   ```
+
+3. **Set your private key:**
+   ```env
+   # Replace with your actual private key (64 hex characters with 0x prefix)
+   PRIVATE_KEY=0xYOUR_ACTUAL_PRIVATE_KEY_HERE
+   
+   # Network Configuration
+   USE_TESTNET=true
+   
+   # Default Trading Coin
+   DEFAULT_COIN=BTC-PERP
+   
+   # Server Configuration
+   PORT=3001
+   ```
+
+#### 📚 Detailed Setup Guide
+
+For complete environment variable setup instructions, see:
+- **[Environment Variables Setup Guide](ENV_SETUP.md)** - Complete setup instructions
+- **[Security Best Practices](ENV_SETUP.md#security-best-practices)** - Security guidelines
+
+#### ⚡ Quick Start (Demo Configuration)
+
+If you want to use the demo configuration for testing:
 
 ```typescript
-// src/config/demo.ts - Already configured for testing
+// src/config/demo.ts - Pre-configured for testing
 export const DEMO_CONFIG = {
   PRIVATE_KEY: "0x...", // Demo private key (testnet only)
   USE_TESTNET: true,
   DEFAULT_COIN: "BTC-PERP",
   API_URL: "https://api.hyperliquid-testnet.xyz"
-}
-```
-
-#### Option B: Using Your Own Private Key
-Edit `src/config/config.ts`:
-
-```typescript
-export const CONFIG = {
-  PRIVATE_KEY: "0xYOUR_PRIVATE_KEY_HERE", // 64 hex characters with 0x prefix
-  USE_TESTNET: true, // Always use testnet for development
-  DEFAULT_COIN: "BTC-PERP",
-  API_URL: "https://api.hyperliquid-testnet.xyz", // Testnet URL
-  // ... other settings
 }
 ```
 
@@ -280,12 +322,15 @@ npm run preview
 
 ### Trading Interface Usage
 
+> 🖼️ **See the interface preview above for a visual overview of the trading interface!**
+> 📹 **Watch the demo videos above for step-by-step guidance on each order type!**
+
 #### **Basic Trading Flow**
 1. **Select Order Type**: Choose between Market, Limit, Scale, or TWAP
 2. **Set Side**: Choose Buy/Long or Sell/Short
 3. **Enter Size**: Input order size in USD or Coin units
 4. **Configure Options**:
-   - Set leverage (up to 9x)
+   - Set leverage (up to 10x)
    - Choose margin mode (Isolated/Cross)
    - Enable Reduce Only if needed
    - Set Take Profit/Stop Loss prices
@@ -299,10 +344,10 @@ npm run preview
 
 ### Supported Order Types
 
-- **Market Orders**: Execute immediately at current market price
-- **Limit Orders**: Execute at specified price or better
-- **Scale Orders**: Place multiple orders at different price levels
-- **TWAP Orders**: Execute orders over time to reduce market impact
+- **Market Orders**: Execute immediately at current market price ([Watch Demo](https://www.loom.com/share/47cff0dc410b4dcc86b35a1323d59077?sid=a79e74a0-07de-46c6-95a8-24ba1c8c859f))
+- **Limit Orders**: Execute at specified price or better ([Watch Demo](https://www.loom.com/share/8392967a459e47fea42ba7a4d8c1fbc4?sid=dca3765e-0c26-4b68-ac4d-11dc3c2a3f4c))
+- **Scale Orders**: Place multiple orders at different price levels ([Watch Demo](https://www.loom.com/share/5feaa6e04e904bc5bd75d53d2f387994?sid=c364f19f-f0f5-46b6-bb41-9dafb2a5d4b6))
+- **TWAP Orders**: Execute orders over time to reduce market impact ([Watch Demo](https://www.loom.com/share/f113a7fc83764f188b9828587bd3aaf6?sid=4f8c6cbf-881f-4cd3-9fbd-d8a99e0e269c))
 
 ### Leverage and Margin
 

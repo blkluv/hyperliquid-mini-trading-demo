@@ -1,13 +1,14 @@
 // Simple Express server for Hyperliquid API
 // This runs the SDK on the server side for better security
 
+import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import { Hyperliquid } from 'hyperliquid'
 import { ethers } from 'ethers'
 
 const app = express()
-const PORT = 3001
+// PORT is now defined in CONFIG
 
 // Middleware
 app.use(cors())
@@ -15,9 +16,19 @@ app.use(express.json())
 
 // Configuration
 const CONFIG = {
-  PRIVATE_KEY: process.env.PRIVATE_KEY || "0xa2c19b64f80a057ee25d39ad2ea4af26147e7cf9293e130254e9a5eba459182f",
+  PRIVATE_KEY: process.env.PRIVATE_KEY,
   USE_TESTNET: process.env.USE_TESTNET !== 'false', // Default to true
-  DEFAULT_COIN: "BTC-PERP"
+  DEFAULT_COIN: process.env.DEFAULT_COIN || "BTC-PERP",
+  PORT: process.env.PORT || 3001,
+  API_URL: process.env.API_URL || (process.env.USE_TESTNET !== 'false' ? 'https://api.hyperliquid-testnet.xyz' : 'https://api.hyperliquid.xyz')
+}
+
+// Validate required environment variables
+if (!CONFIG.PRIVATE_KEY) {
+  console.error('❌ Error: PRIVATE_KEY environment variable is required')
+  console.error('Please create a .env file with your private key:')
+  console.error('PRIVATE_KEY=0xYOUR_PRIVATE_KEY_HERE')
+  process.exit(1)
 }
 
 // Initialize Hyperliquid SDK
@@ -626,9 +637,9 @@ app.post('/api/switch-network', async (req, res) => {
 })
 
 // Start server
-app.listen(PORT, async () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`)
-  console.log(`📊 API endpoints available at http://localhost:${PORT}/api`)
+app.listen(CONFIG.PORT, async () => {
+  console.log(`🚀 Server running on http://localhost:${CONFIG.PORT}`)
+  console.log(`📊 API endpoints available at http://localhost:${CONFIG.PORT}/api`)
   await initializeSDK()
 })
 
