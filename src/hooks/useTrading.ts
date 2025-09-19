@@ -761,7 +761,8 @@ export const useTrading = () => {
       
       return result
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update leverage')
+      console.error('Failed to update leverage:', err)
+      // Don't set error state here - let the component handle it with toast
       throw err
     } finally {
       setIsLoading(false)
@@ -794,7 +795,8 @@ export const useTrading = () => {
       
       return result
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update margin mode')
+      console.error('Failed to update margin mode:', err)
+      // Don't set error state here - let the component handle it with toast
       throw err
     } finally {
       setIsLoading(false)

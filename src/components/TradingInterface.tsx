@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react'
 import { ChevronDown, TrendingUp, AlertCircle, Network } from 'lucide-react'
+import toast, { Toaster } from 'react-hot-toast'
 import { useTrading } from '../hooks/useTrading'
 import { usePriceSubscription } from '../hooks/usePriceSubscription'
 import OrderResponsePopup, { OrderResponse } from './OrderResponsePopup'
 import { CONFIG } from '../config/config'
+import { hyperliquidService } from '../services/hyperliquidService'
 
 const TradingInterface: React.FC = () => {
   const {
@@ -35,10 +37,205 @@ const TradingInterface: React.FC = () => {
   const [touchedFields, setTouchedFields] = useState<Set<string>>(new Set())
   const [showConfirmPopup, setShowConfirmPopup] = useState(false)
   const [pendingOrder, setPendingOrder] = useState<any>(null)
+
+  // Add custom styles for the leverage slider
+  React.useEffect(() => {
+    const style = document.createElement('style')
+    style.textContent = `
+      .slider {
+        -webkit-appearance: none;
+        appearance: none;
+        height: 12px;
+        border-radius: 6px;
+        outline: none;
+        transition: all 0.3s ease;
+        box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
+      }
+      
+      .slider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #14b8a6, #0d9488);
+        cursor: pointer;
+        border: 3px solid #ffffff;
+        box-shadow: 0 4px 8px rgba(20, 184, 166, 0.3), 0 2px 4px rgba(0, 0, 0, 0.2);
+        transition: all 0.3s ease;
+      }
+      
+      .slider::-webkit-slider-thumb:hover {
+        background: linear-gradient(135deg, #0d9488, #0f766e);
+        transform: scale(1.15);
+        box-shadow: 0 6px 12px rgba(20, 184, 166, 0.4), 0 4px 8px rgba(0, 0, 0, 0.3);
+      }
+      
+      .slider::-webkit-slider-thumb:active {
+        transform: scale(1.05);
+      }
+      
+      .slider::-moz-range-thumb {
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #14b8a6, #0d9488);
+        cursor: pointer;
+        border: 3px solid #ffffff;
+        box-shadow: 0 4px 8px rgba(20, 184, 166, 0.3), 0 2px 4px rgba(0, 0, 0, 0.2);
+        transition: all 0.3s ease;
+      }
+      
+      .slider::-moz-range-thumb:hover {
+        background: linear-gradient(135deg, #0d9488, #0f766e);
+        transform: scale(1.15);
+        box-shadow: 0 6px 12px rgba(20, 184, 166, 0.4), 0 4px 8px rgba(0, 0, 0, 0.3);
+      }
+      
+      .slider:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      
+      .slider:disabled::-webkit-slider-thumb {
+        cursor: not-allowed;
+        transform: none;
+      }
+      
+      .slider:disabled::-moz-range-thumb {
+        cursor: not-allowed;
+        transform: none;
+      }
+      
+      /* Margin Mode Dropdown Styles */
+      .margin-mode-dropdown {
+        position: relative;
+        overflow: hidden;
+      }
+      
+      .margin-mode-dropdown::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: -100%;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(20, 184, 166, 0.1), transparent);
+        transition: left 0.5s;
+      }
+      
+      .margin-mode-dropdown:hover::before {
+        left: 100%;
+      }
+      
+      .margin-mode-dropdown:hover .toggle-indicator {
+        transform: scale(1.1);
+        background-color: #14b8a6;
+      }
+      
+      .margin-mode-dropdown:active {
+        transform: scale(0.98);
+      }
+    `
+    document.head.appendChild(style)
+    
+    return () => {
+      document.head.removeChild(style)
+    }
+  }, [])
+
+  // Toast notifications for loading states
+  React.useEffect(() => {
+    if (isLoading) {
+      toast.loading('Processing your order...', {
+        id: 'order-processing',
+        duration: Infinity,
+        style: {
+          background: '#1e293b',
+          color: '#14b8a6',
+          border: '1px solid #14b8a6',
+        },
+      })
+    } else {
+      toast.dismiss('order-processing')
+    }
+  }, [isLoading])
+
+  // Toast notification for TWAP completion
+  const [completedTasks, setCompletedTasks] = React.useState<Set<string>>(new Set())
+  
+  React.useEffect(() => {
+    if (activeTwapTasks.size > 0) {
+      Array.from(activeTwapTasks).forEach(taskId => {
+        const task = twapTaskDetails.get(taskId)
+        if (task && !completedTasks.has(taskId)) {
+          const totalProcessed = task.completedOrders + task.failedOrders
+          const progress = totalProcessed >= task.intervals ? 100 : (task.completedOrders / task.intervals) * 100
+          
+          // Show toast when progress reaches 100% and task is completed
+          if (progress >= 100 && task.status === 'completed') {
+            toast.success(`TWAP order completed: ${task.completedOrders}/${task.intervals} orders executed successfully`, {
+              duration: 5000,
+              style: {
+                background: '#065f46',
+                color: '#ffffff',
+                border: '1px solid #10b981',
+              },
+            })
+            // Mark this task as completed to avoid duplicate toasts
+            setCompletedTasks(prev => new Set(prev).add(taskId))
+          }
+        }
+      })
+    }
+  }, [activeTwapTasks, twapTaskDetails, completedTasks])
   
   // Helper function to mark field as touched
   const markFieldAsTouched = (fieldName: string) => {
     setTouchedFields(prev => new Set(prev).add(fieldName))
+  }
+
+  // Generic rounding functions
+  // Detect tick size from the number of decimals in input
+  const getTick = (value: number): number => {
+    const s = value.toString()
+    if (s.includes('.')) {
+      return 1 / Math.pow(10, s.split('.')[1].length)
+    }
+    return 1
+  }
+
+
+  const roundDown = (value: number): number => {
+    const tick = getTick(value)
+    return Number((Math.floor(value / tick) * tick).toFixed(safeDecimals(tick)))
+  }
+
+  // Helper: count decimals for formatting
+  const safeDecimals = (tick: number): number => {
+    const s = tick.toString()
+    return s.includes('.') ? s.split('.')[1].length : 0
+  }
+
+  // Generic coin-specific rounding function
+  const roundCoinSize = (rawSize: number, baseCoin: string): number => {
+    switch (baseCoin) {
+      case 'DOGE':
+        // DOGE: Round to integer
+        return roundDown(rawSize)
+      case 'BTC':
+        // BTC: Round to 0.00001 (5 decimal places)
+        return roundDown(Math.round(rawSize * 100000) / 100000)
+      case 'ETH':
+        // ETH: Round to 0.0001 (4 decimal places)
+        return roundDown(Math.round(rawSize * 10000) / 10000)
+      case 'SOL':
+        // SOL: Round to 0.01 (2 decimal places)
+        return roundDown(Math.round(rawSize * 100) / 100)
+      default:
+        // Default: Round to 0.000001 (6 decimal places)
+        return roundDown(Math.round(rawSize * 1000000) / 1000000)
+    }
   }
 
   // Helper function to convert USD to coin size with coin-specific rounding
@@ -48,24 +245,8 @@ const TradingInterface: React.FC = () => {
     // Extract base coin from coin pair (e.g., "BTC-PERP" -> "BTC")
     const baseCoin = coin.toUpperCase().split('-')[0]
     
-    // Apply coin-specific rounding rules
-    switch (baseCoin) {
-      case 'DOGE':
-        // DOGE: Round to integer
-        return Math.round(rawSize)
-      case 'BTC':
-        // BTC: Round to 0.00001 (5 decimal places)
-        return Math.round(rawSize * 100000) / 100000
-      case 'ETH':
-        // ETH: Round to 0.0001 (4 decimal places)
-        return Math.round(rawSize * 10000) / 10000
-      case 'SOL':
-        // SOL: Round to 0.01 (2 decimal places)
-        return Math.round(rawSize * 100) / 100
-      default:
-        // Default: Round to 0.000001 (6 decimal places)
-        return Math.round(rawSize * 1000000) / 1000000
-    }
+    // Apply coin-specific rounding rules using generic function
+    return roundCoinSize(rawSize, baseCoin)
   }
 
   // Helper function to get the actual coin size for API calls
@@ -412,6 +593,39 @@ const TradingInterface: React.FC = () => {
             errors.push('Scale order count is required')
           }
         }
+        
+        // Scale sub-order value validation
+        if (touchedFields.has('size') && state.size && state.size.trim() !== '' && 
+            state.scaleOrderCount && state.scaleOrderCount.trim() !== '' &&
+            state.scaleStartPrice && state.scaleEndPrice &&
+            state.scaleStartPrice.trim() !== '' && state.scaleEndPrice.trim() !== '') {
+          const totalSize = parseFloat(state.size.trim())
+          const orderCount = parseInt(state.scaleOrderCount.trim())
+          const startPrice = parseFloat(state.scaleStartPrice.trim())
+          const endPrice = parseFloat(state.scaleEndPrice.trim())
+          
+          if (!isNaN(totalSize) && !isNaN(orderCount) && !isNaN(startPrice) && !isNaN(endPrice) && 
+              totalSize > 0 && orderCount > 0 && startPrice > 0 && endPrice > 0) {
+            
+            // Calculate average price for sub-order value estimation
+            const avgPrice = (startPrice + endPrice) / 2
+            
+            if (state.sizeUnit === 'USD') {
+              // For USD mode, each sub-order gets equal USD value
+              const subOrderUsdValue = totalSize / orderCount
+              if (subOrderUsdValue < 10) {
+                errors.push(`Scale sub-order value too low: $${subOrderUsdValue.toFixed(2)} (minimum: $10.00)`)
+              }
+            } else {
+              // For coin mode, calculate USD value using average price
+              const subOrderSize = totalSize / orderCount
+              const subOrderUsdValue = subOrderSize * avgPrice
+              if (subOrderUsdValue < 10) {
+                errors.push(`Scale sub-order value too low: $${subOrderUsdValue.toFixed(2)} (minimum: $10.00)`)
+              }
+            }
+          }
+        }
         break
 
       case 'twap':
@@ -478,24 +692,7 @@ const TradingInterface: React.FC = () => {
               
               // Apply coin-specific rounding
               const baseCoin = state.selectedCoin?.replace('-PERP', '') || 'COIN'
-              let roundedSubOrderSize: number
-              
-              switch (baseCoin) {
-                case 'DOGE':
-                  roundedSubOrderSize = Math.round(subOrderSize) // Round to integer
-                  break
-                case 'BTC':
-                  roundedSubOrderSize = Math.round(subOrderSize * 100000) / 100000 // 5 decimal places
-                  break
-                case 'ETH':
-                  roundedSubOrderSize = Math.round(subOrderSize * 10000) / 10000 // 4 decimal places
-                  break
-                case 'SOL':
-                  roundedSubOrderSize = Math.round(subOrderSize * 100) / 100 // 2 decimal places
-                  break
-                default:
-                  roundedSubOrderSize = Math.round(subOrderSize * 1000000) / 1000000 // 6 decimal places
-              }
+              const roundedSubOrderSize = roundCoinSize(subOrderSize, baseCoin)
               
               // Recalculate USD value with rounded size
               const roundedSubOrderUsdValue = state.sizeUnit === 'USD' 
@@ -832,8 +1029,54 @@ const TradingInterface: React.FC = () => {
     
     // Update position for the selected coin immediately
     try {
-      const position = await updatePositionForCoin(coin)
-      console.log(`Position for ${coin}:`, position)
+      await updatePositionForCoin(coin)
+      
+      // Get clearinghouse state to extract margin mode and leverage for this coin
+      try {
+        const clearinghouseState = await hyperliquidService.getClearinghouseState()
+        
+        if (clearinghouseState?.assetPositions) {
+          const coinToMatch = coin.replace('-PERP', '')
+          const coinPosition = clearinghouseState.assetPositions.find(
+            (pos: any) => pos.position?.coin === coinToMatch
+          )
+          
+          if (coinPosition?.position) {
+            const position = coinPosition.position
+            
+            // Extract margin mode and leverage from position
+            const positionMarginMode = position.leverage && typeof position.leverage === 'object' ? position.leverage.type : null
+            const positionLeverage = position.leverage && typeof position.leverage === 'object' ? position.leverage.value : null
+            
+            if (positionMarginMode) {
+              setState(prev => ({ ...prev, marginMode: positionMarginMode }))
+              toast.success(`Margin mode updated to ${positionMarginMode} for ${coin}`, {
+                duration: 3000,
+                style: {
+                  background: '#065f46',
+                  color: '#ffffff',
+                  border: '1px solid #10b981',
+                },
+              })
+            }
+            
+            if (positionLeverage && !isNaN(parseFloat(positionLeverage))) {
+              const leverage = parseFloat(positionLeverage)
+              setState(prev => ({ ...prev, leverage }))
+              toast.success(`Leverage updated to ${leverage}x for ${coin}`, {
+                duration: 3000,
+                style: {
+                  background: '#065f46',
+                  color: '#ffffff',
+                  border: '1px solid #10b981',
+                },
+              })
+            }
+          }
+        }
+      } catch (clearinghouseError) {
+        console.error('Failed to get clearinghouse state for coin:', clearinghouseError)
+      }
     } catch (error) {
       console.error('Failed to update position for selected coin:', error)
     }
@@ -986,6 +1229,7 @@ const TradingInterface: React.FC = () => {
         const totalOrders = result.totalOrders
         
         if (successfulOrders === totalOrders) {
+          toast.success(`Scale order completed: ${successfulOrders}/${totalOrders} orders placed successfully`)
           setOrderResponse({
             success: true,
             orderId: `Scale Order (${successfulOrders}/${totalOrders})`,
@@ -994,6 +1238,7 @@ const TradingInterface: React.FC = () => {
             data: result
           })
         } else if (successfulOrders > 0) {
+          toast.success(`Scale order partially completed: ${successfulOrders}/${totalOrders} orders placed successfully`)
           setOrderResponse({
             success: true,
             orderId: `Scale Order (${successfulOrders}/${totalOrders})`,
@@ -1002,6 +1247,7 @@ const TradingInterface: React.FC = () => {
             data: result
           })
         } else {
+          toast.error('All scale orders failed')
           setOrderResponse({
             success: false,
             error: 'All scale orders failed',
@@ -1013,6 +1259,7 @@ const TradingInterface: React.FC = () => {
         const totalOrders = result.totalOrders
         const totalDuration = result.totalDuration
         
+        toast.success(`TWAP order started: ${totalOrders} orders will execute over ${totalDuration} minutes`)
         setOrderResponse({
           success: true,
           orderId: `TWAP Order Started`,
@@ -1077,16 +1324,36 @@ const TradingInterface: React.FC = () => {
   const handleLeverageChange = async (leverage: number) => {
     try {
       await updateLeverage(leverage)
+      toast.success(`Leverage updated to ${leverage}x`)
     } catch (err) {
       console.error('Failed to update leverage:', err)
+      if (err instanceof Error) {
+        if (err.message.includes('Cannot switch leverage type with open position')) {
+          toast.error('Cannot change leverage while you have open positions. Please close all positions first.')
+        } else {
+          toast.error(`Failed to update leverage: ${err.message}`)
+        }
+      } else {
+        toast.error('Failed to update leverage')
+      }
     }
   }
 
   const handleMarginModeChange = async (marginMode: 'isolated' | 'cross') => {
     try {
       await updateMarginMode(marginMode)
+      toast.success(`Margin mode updated to ${marginMode}`)
     } catch (err) {
       console.error('Failed to update margin mode:', err)
+      if (err instanceof Error) {
+        if (err.message.includes('Cannot switch leverage type with open position')) {
+          toast.error('Cannot change margin mode while you have open positions. Please close all positions first.')
+        } else {
+          toast.error(`Failed to update margin mode: ${err.message}`)
+        }
+      } else {
+        toast.error('Failed to update margin mode')
+      }
     }
   }
 
@@ -1121,38 +1388,23 @@ const TradingInterface: React.FC = () => {
 
   return (
     <div className="max-w-md mx-auto p-6 bg-dark-surface rounded-lg">
-      {/* Error Display */}
-      {error && (
-        <div className="mb-4 p-3 bg-red-900/20 border border-red-500 rounded flex items-center gap-2 text-red-400">
-          <AlertCircle size={16} />
-          <span className="text-sm">{error}</span>
+      {/* Error Messages */}
+      {(error || validationErrors.length > 0) && (
+        <div className="mb-4 space-y-3">
+          {/* General Error - Only show if not a toast error */}
+          {error && !error.includes('Cannot change leverage while you have open positions') && 
+           !error.includes('Failed to update leverage') && 
+           !error.includes('Failed to update margin mode') && 
+           !error.includes('Cannot change margin mode while you have open positions') && (
+            <div className="p-3 bg-red-900/20 border border-red-500 rounded flex items-center gap-2 text-red-400">
+              <AlertCircle size={16} />
+              <span className="text-sm">{error}</span>
+            </div>
+          )}
+          
         </div>
       )}
 
-      {/* Validation Errors Display */}
-      {validationErrors.length > 0 && (
-        <div className="mb-4 p-3 bg-yellow-900/20 border border-yellow-500 rounded">
-          <div className="flex items-center gap-2 text-yellow-400 mb-2">
-            <AlertCircle size={16} />
-            <span className="text-sm font-medium">Validation Issues:</span>
-          </div>
-          <ul className="text-yellow-300 text-sm space-y-1">
-            {validationErrors.map((error, index) => (
-              <li key={index} className="flex items-start gap-2">
-                <span className="text-yellow-400">•</span>
-                <span>{error}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Loading Indicator */}
-      {isLoading && (
-        <div className="mb-4 p-3 bg-blue-900/20 border border-blue-500 rounded text-blue-400 text-sm">
-          Processing...
-        </div>
-      )}
 
       {/* SDK Status */}
       {!isInitialized && (
@@ -1316,22 +1568,7 @@ const TradingInterface: React.FC = () => {
             </button>
           </div>
         </div>
-        <div className="mt-4 p-3 bg-gray-900/60 rounded-lg flex justify-between items-center border border-gray-700">
-          <span className="text-gray-400 text-sm">
-            {formatPairLabel(state.selectedCoin)} Price:
-          </span>
-          <span className="text-green-400 font-bold text-lg">
-            {priceError ? (
-              <span className="text-red-400 text-sm">{priceError}</span>
-            ) : typeof topCardPrice === 'number' ? (
-              `$${topCardPrice.toLocaleString(undefined, { minimumFractionDigits: 5, maximumFractionDigits: 5 })}`
-            ) : priceConnected ? (
-              <span className="text-gray-400 text-sm">Loading...</span>
-            ) : (
-              <span className="text-gray-400 text-sm">Connecting...</span>
-            )}
-          </span>
-        </div>
+
       </div>
 
       {/* Coin Selection and Price Display */}
@@ -1358,8 +1595,7 @@ const TradingInterface: React.FC = () => {
                 const selectedCoinData = CONFIG.AVAILABLE_COINS.find(coin => coin.symbol === state.selectedCoin)
                 return (
                   <>
-                    <span className="text-2xl">{selectedCoinData?.icon}</span>
-                    <span className="text-lg font-medium text-white">{selectedCoinData?.name}</span>
+                    
                   </>
                 )
               })()}
@@ -1386,40 +1622,63 @@ const TradingInterface: React.FC = () => {
       </div>
 
       {/* Top Configuration Bar */}
-      <div className="flex gap-2 mb-4">
-        {/* Margin Mode Dropdown */}
-        <div className="relative">
-          <select
-            value={state.marginMode}
-            onChange={(e) => handleMarginModeChange(e.target.value as 'isolated' | 'cross')}
-            disabled={isLoading}
-            className="px-3 py-1 rounded text-sm font-medium bg-dark-border text-white border border-gray-600 focus:border-teal-primary focus:outline-none appearance-none pr-8 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <option value="cross">Cross</option>
-            <option value="isolated">Isolated</option>
-          </select>
-          <ChevronDown size={16} className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 pointer-events-none" />
-        </div>
-        {/* Leverage Dropdown */}
-        <div className="relative">
-          <select
-            value={state.leverage}
-            onChange={(e) => handleLeverageChange(parseInt(e.target.value))}
-            disabled={isLoading}
-            className="px-3 py-1 rounded text-sm font-medium bg-dark-border text-white border border-gray-600 focus:border-teal-primary focus:outline-none appearance-none pr-8 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <option value={1}>1x</option>
-            <option value={3}>3x</option>
-            <option value={5}>5x</option>
-            <option value={9}>9x</option>
-          </select>
-          <ChevronDown size={16} className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 pointer-events-none" />
-        </div>
-        <button
-          className="px-3 py-1 rounded text-sm font-medium bg-dark-border text-white"
+      <div className="flex gap-3 mb-6">
+        {/* Margin Mode Toggle */}
+        <div 
+          className="margin-mode-dropdown relative bg-dark-border rounded-lg border border-gray-600 hover:border-teal-primary transition-all duration-200 hover:shadow-lg hover:shadow-teal-primary/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          onClick={() => !isLoading && handleMarginModeChange(state.marginMode === 'cross' ? 'isolated' : 'cross')}
         >
-          One-Way
-        </button>
+          <div className="flex flex-col items-center justify-center px-4 py-3 min-h-[80px]">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="w-2 h-2 rounded-full bg-teal-primary shadow-sm"></div>
+              <span className="text-xs font-medium text-gray-400">Margin Mode</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-lg font-bold text-white capitalize">{state.marginMode}</span>
+              <div className="toggle-indicator w-4 h-4 rounded-full bg-gray-600 flex items-center justify-center transition-all duration-200">
+                <div className="w-2 h-2 rounded-full bg-white"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        {/* Leverage Slider */}
+        <div className="flex-1 bg-dark-border rounded-lg border border-gray-600 hover:border-teal-primary transition-colors p-4">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-medium text-gray-300">Leverage</span>
+            <div className="flex items-center gap-2">
+              <span className="text-2xl font-bold text-teal-primary">{state.leverage}x</span>
+             <div className={`px-2 py-1 rounded-full text-xs font-medium ${
+               state.leverage <= 3 ? 'bg-green-900/30 text-green-400 border border-green-500/30' :
+               state.leverage <= 6 ? 'bg-yellow-900/30 text-yellow-400 border border-yellow-500/30' :
+               state.leverage <= 8 ? 'bg-orange-900/30 text-orange-400 border border-orange-500/30' :
+               'bg-red-900/30 text-red-400 border border-red-500/30'
+             }`}>
+               {state.leverage <= 3 ? 'Low Risk' :
+                state.leverage <= 6 ? 'Medium Risk' :
+                state.leverage <= 8 ? 'High Risk' : 'Very High Risk'}
+             </div>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-gray-400 font-medium min-w-[24px]">1x</span>
+           <input
+             type="range"
+             min="1"
+             max="10"
+             value={state.leverage}
+             onChange={(e) => handleLeverageChange(parseInt(e.target.value))}
+             disabled={isLoading}
+             className="flex-1 h-3 bg-gray-700 rounded-lg appearance-none cursor-pointer slider"
+             style={{
+               background: `linear-gradient(to right, #14b8a6 0%, #14b8a6 ${((state.leverage - 1) / 9) * 100}%, #374151 ${((state.leverage - 1) / 9) * 100}%, #374151 100%)`
+             }}
+           />
+           <span className="text-xs text-gray-400 font-medium min-w-[32px]">10x</span>
+          </div>
+        </div>
+ 
       </div>
 
       {/* Order Type Tabs */}
@@ -1780,23 +2039,7 @@ const TradingInterface: React.FC = () => {
                       
                       // Round to coin-specific precision
                       const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
-                      let roundedSize
-                      switch (baseCoin) {
-                        case 'DOGE':
-                          roundedSize = Math.round(rawSize) // Round to integer
-                          break
-                        case 'BTC':
-                          roundedSize = Math.round(rawSize * 100000) / 100000 // 5 decimal places
-                          break
-                        case 'ETH':
-                          roundedSize = Math.round(rawSize * 10000) / 10000 // 4 decimal places
-                          break
-                        case 'SOL':
-                          roundedSize = Math.round(rawSize * 100) / 100 // 2 decimal places
-                          break
-                        default:
-                          roundedSize = Math.round(rawSize * 1000000) / 1000000 // 6 decimal places
-                      }
+                      const roundedSize = roundCoinSize(rawSize, baseCoin)
                       
                       const size = roundedSize.toFixed(6)
                       
@@ -1933,24 +2176,7 @@ const TradingInterface: React.FC = () => {
                     
                     // Apply coin-specific rounding for validation
                     const baseCoin = state.selectedCoin?.replace('-PERP', '') || 'COIN'
-                    let roundedSubOrderSize: number
-                    
-                    switch (baseCoin) {
-                      case 'DOGE':
-                        roundedSubOrderSize = Math.round(subOrderSize) // Round to integer
-                        break
-                      case 'BTC':
-                        roundedSubOrderSize = Math.round(subOrderSize * 100000) / 100000 // 5 decimal places
-                        break
-                      case 'ETH':
-                        roundedSubOrderSize = Math.round(subOrderSize * 10000) / 10000 // 4 decimal places
-                        break
-                      case 'SOL':
-                        roundedSubOrderSize = Math.round(subOrderSize * 100) / 100 // 2 decimal places
-                        break
-                      default:
-                        roundedSubOrderSize = Math.round(subOrderSize * 1000000) / 1000000 // 6 decimal places
-                    }
+                    const roundedSubOrderSize = roundCoinSize(subOrderSize, baseCoin)
                     
                     // Recalculate USD value with rounded size
                     const roundedSubOrderUsdValue = state.sizeUnit === 'USD' 
@@ -2025,16 +2251,6 @@ const TradingInterface: React.FC = () => {
                           </div>
                         )}
                         
-                        {/* Order Requirements Info */}
-                        <div className="mt-3 pt-3 border-t border-blue-500/30">
-                          <div className="text-blue-400 text-sm font-medium mb-2">📋 Order Requirements:</div>
-         <div className="text-blue-300 text-xs space-y-1">
-           <div>• Each sub-order must be ≥ $10 USD value</div>
-           <div>• BTC minimum size: 0.00001 BTC</div>
-           <div>• ETH minimum size: 0.0001 ETH</div>
-           <div>• DOGE minimum size: 1 DOGE</div>
-         </div>
-                        </div>
                       </>
                     )
                   })()}
@@ -2184,7 +2400,7 @@ const TradingInterface: React.FC = () => {
         </label>
       </div>
 
-      {/* Error Messages */}
+      {/* Validation Issues Display */}
       {validationErrors.length > 0 && (
         <div className="mb-4 p-3 bg-yellow-900/20 border border-yellow-500 rounded">
           <div className="flex items-center gap-2 text-yellow-400 mb-2">
@@ -2259,23 +2475,7 @@ const TradingInterface: React.FC = () => {
                   
                   // Round to coin-specific precision
                   const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
-                  let roundedSize
-                  switch (baseCoin) {
-                    case 'DOGE':
-                      roundedSize = Math.round(rawSize) // Round to integer
-                      break
-                    case 'BTC':
-                      roundedSize = Math.round(rawSize * 100000) / 100000 // 5 decimal places
-                      break
-                    case 'ETH':
-                      roundedSize = Math.round(rawSize * 10000) / 10000 // 4 decimal places
-                      break
-                    case 'SOL':
-                      roundedSize = Math.round(rawSize * 100) / 100 // 2 decimal places
-                      break
-                    default:
-                      roundedSize = Math.round(rawSize * 1000000) / 1000000 // 6 decimal places
-                  }
+                  const roundedSize = roundCoinSize(rawSize, baseCoin)
                   
                   return `${roundedSize.toFixed(6)} ${state.sizeUnit} @ $${startPrice.toFixed(5)}`
                 })()}
@@ -2319,23 +2519,7 @@ const TradingInterface: React.FC = () => {
                   
                   // Round to coin-specific precision
                   const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
-                  let roundedSize
-                  switch (baseCoin) {
-                    case 'DOGE':
-                      roundedSize = Math.round(rawSize) // Round to integer
-                      break
-                    case 'BTC':
-                      roundedSize = Math.round(rawSize * 100000) / 100000 // 5 decimal places
-                      break
-                    case 'ETH':
-                      roundedSize = Math.round(rawSize * 10000) / 10000 // 4 decimal places
-                      break
-                    case 'SOL':
-                      roundedSize = Math.round(rawSize * 100) / 100 // 2 decimal places
-                      break
-                    default:
-                      roundedSize = Math.round(rawSize * 1000000) / 1000000 // 6 decimal places
-                  }
+                  const roundedSize = roundCoinSize(rawSize, baseCoin)
                   
                   return `${roundedSize.toFixed(6)} ${state.sizeUnit} @ $${endPrice.toFixed(5)}`
                 })()}
@@ -2372,28 +2556,41 @@ const TradingInterface: React.FC = () => {
                     
                     // Round to coin-specific precision
                     const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
-                    let roundedSize
-                    switch (baseCoin) {
-                      case 'DOGE':
-                        roundedSize = Math.round(rawSize) // Round to integer
-                        break
-                      case 'BTC':
-                        roundedSize = Math.round(rawSize * 100000) / 100000 // 5 decimal places
-                        break
-                      case 'ETH':
-                        roundedSize = Math.round(rawSize * 10000) / 10000 // 4 decimal places
-                        break
-                      case 'SOL':
-                        roundedSize = Math.round(rawSize * 100) / 100 // 2 decimal places
-                        break
-                      default:
-                        roundedSize = Math.round(rawSize * 1000000) / 1000000 // 6 decimal places
-                    }
+                    const roundedSize = roundCoinSize(rawSize, baseCoin)
                     
                     totalValue += roundedSize * price
                   }
                   
                   return `$${totalValue.toFixed(2)}`
+                })()}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Sub-order Value:</span>
+              <span className="text-white">
+                {(() => {
+                  let totalSize = parseFloat(state.size || '0')
+                  const startPrice = parseFloat(state.scaleStartPrice || '0')
+                  const endPrice = parseFloat(state.scaleEndPrice || '0')
+                  const orderCount = parseInt(state.scaleOrderCount || '1')
+                  
+                  if (totalSize <= 0 || startPrice <= 0 || endPrice <= 0 || orderCount <= 0) {
+                    return '$0.00'
+                  }
+                  
+                  // Calculate average price for sub-order value estimation
+                  const avgPrice = (startPrice + endPrice) / 2
+                  
+                  if (state.sizeUnit === 'USD') {
+                    // For USD mode, each sub-order gets equal USD value
+                    const subOrderUsdValue = totalSize / orderCount
+                    return `$${subOrderUsdValue.toFixed(2)}`
+                  } else {
+                    // For coin mode, calculate USD value using average price
+                    const subOrderSize = totalSize / orderCount
+                    const subOrderUsdValue = subOrderSize * avgPrice
+                    return `$${subOrderUsdValue.toFixed(2)}`
+                  }
                 })()}
               </span>
             </div>
@@ -2428,23 +2625,7 @@ const TradingInterface: React.FC = () => {
                     
                     // Round to coin-specific precision
                     const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
-                    let roundedSize
-                    switch (baseCoin) {
-                      case 'DOGE':
-                        roundedSize = Math.round(rawSize) // Round to integer
-                        break
-                      case 'BTC':
-                        roundedSize = Math.round(rawSize * 100000) / 100000 // 5 decimal places
-                        break
-                      case 'ETH':
-                        roundedSize = Math.round(rawSize * 10000) / 10000 // 4 decimal places
-                        break
-                      case 'SOL':
-                        roundedSize = Math.round(rawSize * 100) / 100 // 2 decimal places
-                        break
-                      default:
-                        roundedSize = Math.round(rawSize * 1000000) / 1000000 // 6 decimal places
-                    }
+                    const roundedSize = roundCoinSize(rawSize, baseCoin)
                     
                     totalValue += roundedSize * price
                   }
@@ -2660,6 +2841,33 @@ const TradingInterface: React.FC = () => {
         isOpen={showOrderPopup}
         onClose={handleCloseOrderPopup}
         response={orderResponse}
+      />
+
+      {/* Toast Notifications */}
+      <Toaster
+        position="top-right"
+        toastOptions={{
+          duration: 4000,
+          style: {
+            background: '#1e293b',
+            color: '#ffffff',
+            border: '1px solid #374151',
+          },
+          success: {
+            style: {
+              background: '#065f46',
+              color: '#ffffff',
+              border: '1px solid #10b981',
+            },
+          },
+          error: {
+            style: {
+              background: '#7f1d1d',
+              color: '#ffffff',
+              border: '1px solid #ef4444',
+            },
+          },
+        }}
       />
     </div>
   )
