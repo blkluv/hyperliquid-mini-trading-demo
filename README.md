@@ -27,7 +27,7 @@ A simple trading interface defor Hyperliquid that supports Market, Limit, Scale,
 
 Here's what the trading interface looks like:
 
-![Hyperliquid Trading Interface](https://via.placeholder.com/800x600/1e293b/14b8a6?text=Hyperliquid+Trading+Interface)
+![Hyperliquid Trading Interface](ScreenshotUI.png)
 
 *The interface features a dark theme with teal/green accents, showing Margin Mode (Cross), Leverage control (9x with risk indicator), Market/Limit order selection, Buy/Sell buttons, and comprehensive order parameters.*
 
