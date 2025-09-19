@@ -425,14 +425,17 @@ const TradingInterface: React.FC = () => {
         }
         
         // Validate size precision according to Hyperliquid requirements
-        try {
-          if (!validateHyperliquidSizeSync(sizeValue, state.selectedCoin)) {
-            const errorMessage = getHyperliquidSizeValidationError(sizeValue, state.selectedCoin)
-            errors.push(errorMessage)
+        // Skip validation if size unit is USD (no precision restrictions for USD)
+        if (state.sizeUnit !== 'USD') {
+          try {
+            if (!validateHyperliquidSizeSync(sizeValue, state.selectedCoin)) {
+              const errorMessage = getHyperliquidSizeValidationError(sizeValue, state.selectedCoin)
+              errors.push(errorMessage)
+            }
+          } catch (error) {
+            console.error('Error validating order size:', error)
+            errors.push('Order size validation failed')
           }
-        } catch (error) {
-          console.error('Error validating order size:', error)
-          errors.push('Order size validation failed')
         }
       }
       
@@ -566,13 +569,16 @@ const TradingInterface: React.FC = () => {
               errors.push('Limit price must be greater than 0')
             } else {
               // Validate price precision according to Hyperliquid requirements
-              try {
-                if (!validateHyperliquidPrice(priceValue, state.selectedCoin)) {
-                  errors.push('Limit price does not meet Hyperliquid precision requirements')
+              // Skip validation if size unit is USD (no precision restrictions for USD)
+              if (state.sizeUnit !== 'USD') {
+                try {
+                  if (!validateHyperliquidPrice(priceValue, state.selectedCoin)) {
+                    errors.push('Limit price does not meet Hyperliquid precision requirements')
+                  }
+                } catch (error) {
+                  console.error('Error validating limit price:', error)
+                  // Continue with original validation if precision validation fails
                 }
-              } catch (error) {
-                console.error('Error validating limit price:', error)
-                // Continue with original validation if precision validation fails
               }
             }
           } else {
@@ -589,14 +595,17 @@ const TradingInterface: React.FC = () => {
               errors.push('Scale start price must be a valid positive number')
             } else {
               // Validate price precision using Hyperliquid rules
-              try {
-                const isValidPrice = validateHyperliquidPrice(startPrice, state.selectedCoin)
-                if (!isValidPrice) {
-                  errors.push(`Scale start price precision is invalid for ${state.selectedCoin}. Please check the price format.`)
+              // Skip validation if size unit is USD (no precision restrictions for USD)
+              if (state.sizeUnit !== 'USD') {
+                try {
+                  const isValidPrice = validateHyperliquidPrice(startPrice, state.selectedCoin)
+                  if (!isValidPrice) {
+                    errors.push(`Scale start price precision is invalid for ${state.selectedCoin}. Please check the price format.`)
+                  }
+                } catch (error) {
+                  console.error('Error validating start price:', error)
+                  errors.push('Invalid scale start price format')
                 }
-              } catch (error) {
-                console.error('Error validating start price:', error)
-                errors.push('Invalid scale start price format')
               }
             }
           } else {
@@ -611,14 +620,17 @@ const TradingInterface: React.FC = () => {
               errors.push('Scale end price must be a valid positive number')
             } else {
               // Validate price precision using Hyperliquid rules
-              try {
-                const isValidPrice = validateHyperliquidPrice(endPrice, state.selectedCoin)
-                if (!isValidPrice) {
-                  errors.push(`Scale end price precision is invalid for ${state.selectedCoin}. Please check the price format.`)
+              // Skip validation if size unit is USD (no precision restrictions for USD)
+              if (state.sizeUnit !== 'USD') {
+                try {
+                  const isValidPrice = validateHyperliquidPrice(endPrice, state.selectedCoin)
+                  if (!isValidPrice) {
+                    errors.push(`Scale end price precision is invalid for ${state.selectedCoin}. Please check the price format.`)
+                  }
+                } catch (error) {
+                  console.error('Error validating end price:', error)
+                  errors.push('Invalid scale end price format')
                 }
-              } catch (error) {
-                console.error('Error validating end price:', error)
-                errors.push('Invalid scale end price format')
               }
             }
           } else {
@@ -659,19 +671,22 @@ const TradingInterface: React.FC = () => {
               totalSize > 0 && orderCount > 0 && startPrice > 0 && endPrice > 0) {
             
             // Validate all sub-order prices for precision
-            const priceStep = (endPrice - startPrice) / Math.max(1, orderCount - 1)
-            for (let i = 0; i < orderCount; i++) {
-              const subOrderPrice = startPrice + (priceStep * i)
-              try {
-                const isValidPrice = validateHyperliquidPrice(subOrderPrice, state.selectedCoin)
-                if (!isValidPrice) {
-                  errors.push(`Scale order ${i + 1} price precision is invalid for ${state.selectedCoin}. Please adjust price range.`)
-                  break // Only show one error to avoid spam
+            // Skip validation if size unit is USD (no precision restrictions for USD)
+            if (state.sizeUnit !== 'USD') {
+              const priceStep = (endPrice - startPrice) / Math.max(1, orderCount - 1)
+              for (let i = 0; i < orderCount; i++) {
+                const subOrderPrice = startPrice + (priceStep * i)
+                try {
+                  const isValidPrice = validateHyperliquidPrice(subOrderPrice, state.selectedCoin)
+                  if (!isValidPrice) {
+                    errors.push(`Scale order ${i + 1} price precision is invalid for ${state.selectedCoin}. Please adjust price range.`)
+                    break // Only show one error to avoid spam
+                  }
+                } catch (error) {
+                  console.error('Error validating sub-order price:', error)
+                  errors.push(`Invalid price format for scale order ${i + 1}`)
+                  break
                 }
-              } catch (error) {
-                console.error('Error validating sub-order price:', error)
-                errors.push(`Invalid price format for scale order ${i + 1}`)
-                break
               }
             }
             

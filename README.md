@@ -76,13 +76,33 @@ DEFAULT_COIN=BTC-PERP
 ```
 
 ### 3. Run the Application
+
+This application requires both a backend server and a frontend development server to run properly.
+
+#### Start Backend Server
 ```bash
-# Start development server
+# Start the backend server (Node.js)
+node server-new.js
+
+# The backend API will be available at:
+# http://localhost:3000
+```
+
+#### Start Frontend Development Server
+```bash
+# In a new terminal, start the frontend development server
 npm run dev
 
-# The application will be available at:
+# The frontend application will be available at:
 # http://localhost:5173
 ```
+
+#### Complete Setup
+You need to run both servers simultaneously:
+1. **Terminal 1**: Run `node server-new.js` (Backend API)
+2. **Terminal 2**: Run `npm run dev` (Frontend React app)
+
+The frontend will communicate with the backend API to handle trading operations.
 
 ### 4. Run Tests (Optional)
 ```bash
@@ -102,12 +122,16 @@ npm run test:coverage
 
 ### Available Scripts
 ```bash
-npm run dev          # Start development server
-npm run build        # Build for production
+# Frontend Development
+npm run dev          # Start frontend development server (Vite)
+npm run build        # Build frontend for production
 npm run preview      # Preview production build
 npm test            # Run tests
 npm run test:coverage # Run tests with coverage
 npm run lint        # Check code quality
+
+# Backend Server
+node server-new.js   # Start backend API server (Node.js)
 ```
 
 ### Project Structure
