@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { ChevronDown, TrendingUp, AlertCircle, Network } from 'lucide-react'
+import { ChevronDown, AlertCircle, Network } from 'lucide-react'
 import toast, { Toaster } from 'react-hot-toast'
 import { useTrading } from '../hooks/useTrading'
 import { usePriceSubscription } from '../hooks/usePriceSubscription'
@@ -7,6 +7,7 @@ import OrderResponsePopup, { OrderResponse } from './OrderResponsePopup'
 import { CONFIG } from '../config/config'
 import { TradingConfigHelper } from '../config/tradingConfig'
 import { hyperliquidService } from '../services/hyperliquidService'
+import { validateHyperliquidPrice, validateHyperliquidSizeSync, formatHyperliquidPriceSync, formatHyperliquidSizeSync, getHyperliquidSizeValidationError } from '../utils/hyperliquidPrecision'
 
 const TradingInterface: React.FC = () => {
   const {
@@ -221,7 +222,7 @@ const TradingInterface: React.FC = () => {
   // Generic coin-specific rounding function
   const roundCoinSize = (rawSize: number, baseCoin: string): number => {
     const coinKey = `${baseCoin}-PERP`
-    const precision = TradingConfigHelper.getRoundingPrecision(coinKey)
+    const precision = TradingConfigHelper.getSzDecimals(coinKey)
     
     if (precision === 0) {
       // Round to integer
@@ -233,15 +234,20 @@ const TradingInterface: React.FC = () => {
     }
   }
 
-  // Helper function to convert USD to coin size with coin-specific rounding
+  // Helper function to convert USD to coin size with Hyperliquid precision
   const convertUsdToCoinSize = (usdAmount: number, coinPrice: number, coin: string): number => {
     const rawSize = usdAmount / coinPrice
     
-    // Extract base coin from coin pair (e.g., "BTC-PERP" -> "BTC")
-    const baseCoin = coin.toUpperCase().split('-')[0]
-    
-    // Apply coin-specific rounding rules using generic function
-    return roundCoinSize(rawSize, baseCoin)
+    try {
+      // Use Hyperliquid precision formatting
+      const formattedSize = formatHyperliquidSizeSync(rawSize, coin)
+      return parseFloat(formattedSize)
+    } catch (error) {
+      console.error('Error formatting coin size:', error)
+      // Fallback to original logic
+      const baseCoin = coin.toUpperCase().split('-')[0]
+      return roundCoinSize(rawSize, baseCoin)
+    }
   }
 
   // Helper function to get the actual coin size for API calls
@@ -265,31 +271,48 @@ const TradingInterface: React.FC = () => {
     side: 'buy' | 'sell',
     coin: string = 'BTC',
     marginMode: 'isolated' | 'cross' = 'isolated',
-    walletBalance: number = 0 // for cross margin
+    _walletBalance: number = 0, // for cross margin (legacy parameter)
+    positionSize: number = 0, // position size in base units
+    accountValue: number = 0, // total account value for cross margin
+    isolatedMargin: number = 0 // isolated margin for isolated margin
   ) => {
-    // realistic small maintenance margin ratios (exchange-style)
-    const maintenanceMargins: { [key: string]: number } = {
-      'BTC': 0.004,   // 0.4%
-      'ETH': 0.005,   // 0.5%
-      'SOL': 0.01,    // 1%
+    // Maintenance leverage ratios (1 / MAINTENANCE_LEVERAGE)
+    const maintenanceLeverages: { [key: string]: number } = {
+      'BTC': 0.004,   // 0.4% (1/250)
+      'ETH': 0.005,   // 0.5% (1/200)
+      'SOL': 0.01,    // 1% (1/100)
       'default': 0.005
     }
-
-    const maintenanceMargin = maintenanceMargins[coin] || maintenanceMargins.default
     
-    if (side === 'buy') {
-      // For long positions: LP = Entry Price * (1 - (1/Leverage) + Maintenance Margin)
-      // Example: BTC at $50,000, 10x leverage, 4% maintenance margin
-      // LP = 50,000 * (1 - (1/10) + 0.04) = 50,000 * (1 - 0.1 + 0.04) = 50,000 * 0.94 = $47,000
-      // This means the price can drop by 6% before liquidation
-      return entryPrice * (1 - (1 / leverage) + maintenanceMargin)
-    } else {
-      // For short positions: LP = Entry Price * (1 + (1/Leverage) - Maintenance Margin)
-      // Example: BTC at $50,000, 10x leverage, 4% maintenance margin
-      // LP = 50,000 * (1 + (1/10) - 0.04) = 50,000 * (1 + 0.1 - 0.04) = 50,000 * 1.06 = $53,000
-      // This means the price can rise by 6% before liquidation
-      return entryPrice * (1 + (1 / leverage) - maintenanceMargin)
+    const l = maintenanceLeverages[coin] || maintenanceLeverages.default
+    const sideMultiplier = side === 'buy' ? 1 : -1
+    
+    // Calculate position size if not provided
+    if (positionSize === 0) {
+      // Estimate position size based on leverage and available balance
+      const availableBalance = marginMode === 'cross' ? accountValue : isolatedMargin
+      positionSize = (availableBalance * leverage) / entryPrice
     }
+    
+    let marginAvailable: number
+    
+    if (marginMode === 'cross') {
+      // Cross margin: margin_available = account_value - maintenance_margin_required
+      const maintenanceMarginRequired = Math.abs(positionSize) * entryPrice * l
+      marginAvailable = accountValue - maintenanceMarginRequired
+    } else {
+      // Isolated margin: margin_available = isolated_margin - maintenance_margin_required
+      const maintenanceMarginRequired = Math.abs(positionSize) * entryPrice * l
+      marginAvailable = isolatedMargin - maintenanceMarginRequired
+    }
+    
+    // Ensure margin available is not negative
+    marginAvailable = Math.max(0, marginAvailable)
+    
+    // Apply the precise formula: liq_price = price - side * margin_available / position_size / (1 - l * side)
+    const liquidationPrice = entryPrice - sideMultiplier * marginAvailable / Math.abs(positionSize) / (1 - l * sideMultiplier)
+    
+    return liquidationPrice
   }
   
   // Price subscription for selected coin
@@ -315,16 +338,6 @@ const TradingInterface: React.FC = () => {
   }, [state.selectedCoin, isInitialized, getPositionForCoin])
 
 
-  const formatPairLabel = (symbol: string) => {
-    if (!symbol) return 'N/A'
-    if (symbol.includes('-PERP')) {
-      return symbol.replace('-PERP', '/USDC')
-    }
-    if (symbol.includes('-USD')) {
-      return symbol.replace('-USD', '/USD')
-    }
-    return symbol
-  }
 
   const selectedCoinKey = state.selectedCoin?.toUpperCase() || ''
   const topCardPrice = selectedCoinKey && priceMap && priceMap[selectedCoinKey] !== undefined
@@ -410,6 +423,17 @@ const TradingInterface: React.FC = () => {
         if (sizeValue < coinMinSize) {
           errors.push(`Minimum order size is ${coinMinSize} ${state.selectedCoin?.replace('-PERP', '') || 'tokens'}`)
         }
+        
+        // Validate size precision according to Hyperliquid requirements
+        try {
+          if (!validateHyperliquidSizeSync(sizeValue, state.selectedCoin)) {
+            const errorMessage = getHyperliquidSizeValidationError(sizeValue, state.selectedCoin)
+            errors.push(errorMessage)
+          }
+        } catch (error) {
+          console.error('Error validating order size:', error)
+          // Continue with original validation if precision validation fails
+        }
       }
       
       if (errors.length === 0) {
@@ -476,7 +500,8 @@ const TradingInterface: React.FC = () => {
                 errors.push('Reduce-only sell order would increase position. Use regular buy order to reduce position.')
               } else if (sizeValue > availablePosition) {
                 // Sell reduce-only order for more than available position would increase position
-                errors.push(`Reduce-only sell order would increase position. Maximum sell size: ${availablePosition.toFixed(6)} ${state.selectedCoin}`)
+                const formattedAvailablePosition = formatHyperliquidSizeSync(availablePosition, state.selectedCoin)
+                errors.push(`Reduce-only sell order would increase position. Maximum sell size: ${formattedAvailablePosition} ${state.selectedCoin}`)
               }
             }
             
@@ -539,6 +564,16 @@ const TradingInterface: React.FC = () => {
               errors.push('Limit price must be a valid number')
             } else if (priceValue <= 0) {
               errors.push('Limit price must be greater than 0')
+            } else {
+              // Validate price precision according to Hyperliquid requirements
+              try {
+                if (!validateHyperliquidPrice(priceValue, state.selectedCoin)) {
+                  errors.push('Limit price does not meet Hyperliquid precision requirements')
+                }
+              } catch (error) {
+                console.error('Error validating limit price:', error)
+                // Continue with original validation if precision validation fails
+              }
             }
           } else {
             errors.push('Limit price is required for limit orders')
@@ -552,6 +587,17 @@ const TradingInterface: React.FC = () => {
             const startPrice = parseFloat(state.scaleStartPrice.trim())
             if (isNaN(startPrice) || startPrice <= 0) {
               errors.push('Scale start price must be a valid positive number')
+            } else {
+              // Validate price precision using Hyperliquid rules
+              try {
+                const isValidPrice = validateHyperliquidPrice(startPrice, state.selectedCoin)
+                if (!isValidPrice) {
+                  errors.push(`Scale start price precision is invalid for ${state.selectedCoin}. Please check the price format.`)
+                }
+              } catch (error) {
+                console.error('Error validating start price:', error)
+                errors.push('Invalid scale start price format')
+              }
             }
           } else {
             errors.push('Scale start price is required')
@@ -563,6 +609,17 @@ const TradingInterface: React.FC = () => {
             const endPrice = parseFloat(state.scaleEndPrice.trim())
             if (isNaN(endPrice) || endPrice <= 0) {
               errors.push('Scale end price must be a valid positive number')
+            } else {
+              // Validate price precision using Hyperliquid rules
+              try {
+                const isValidPrice = validateHyperliquidPrice(endPrice, state.selectedCoin)
+                if (!isValidPrice) {
+                  errors.push(`Scale end price precision is invalid for ${state.selectedCoin}. Please check the price format.`)
+                }
+              } catch (error) {
+                console.error('Error validating end price:', error)
+                errors.push('Invalid scale end price format')
+              }
             }
           } else {
             errors.push('Scale end price is required')
@@ -600,6 +657,23 @@ const TradingInterface: React.FC = () => {
           
           if (!isNaN(totalSize) && !isNaN(orderCount) && !isNaN(startPrice) && !isNaN(endPrice) && 
               totalSize > 0 && orderCount > 0 && startPrice > 0 && endPrice > 0) {
+            
+            // Validate all sub-order prices for precision
+            const priceStep = (endPrice - startPrice) / Math.max(1, orderCount - 1)
+            for (let i = 0; i < orderCount; i++) {
+              const subOrderPrice = startPrice + (priceStep * i)
+              try {
+                const isValidPrice = validateHyperliquidPrice(subOrderPrice, state.selectedCoin)
+                if (!isValidPrice) {
+                  errors.push(`Scale order ${i + 1} price precision is invalid for ${state.selectedCoin}. Please adjust price range.`)
+                  break // Only show one error to avoid spam
+                }
+              } catch (error) {
+                console.error('Error validating sub-order price:', error)
+                errors.push(`Invalid price format for scale order ${i + 1}`)
+                break
+              }
+            }
             
             // Calculate average price for sub-order value estimation
             const avgPrice = (startPrice + endPrice) / 2
@@ -924,9 +998,6 @@ const TradingInterface: React.FC = () => {
     setState(prev => ({ ...prev, size: normalizedValue }))
   }
 
-  const handleSizePercentageChange = (percentage: number) => {
-    setState(prev => ({ ...prev, sizePercentage: percentage }))
-  }
 
   const handleLimitPriceChange = (value: string) => {
     // Normalize input: trim spaces, only allow numeric input (including decimal point)
@@ -935,16 +1006,24 @@ const TradingInterface: React.FC = () => {
     // Prevent multiple decimal points
     const parts = numericValue.split('.')
     const formattedValue = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : numericValue
+    
     markFieldAsTouched('limitPrice')
     setState(prev => ({ ...prev, limitPrice: formattedValue }))
   }
 
   const handleLimitPriceBlur = () => {
-    // Format price according to tick size when user finishes editing
+    // Format price according to Hyperliquid precision requirements when user finishes editing
     if (state.limitPrice && !isNaN(parseFloat(state.limitPrice))) {
       const price = parseFloat(state.limitPrice)
-      const formattedPrice = formatPriceForTickSize(price, state.selectedCoin)
-      setState(prev => ({ ...prev, limitPrice: formattedPrice }))
+      try {
+        const formattedPrice = formatHyperliquidPriceSync(price, state.selectedCoin)
+        setState(prev => ({ ...prev, limitPrice: formattedPrice }))
+      } catch (error) {
+        console.error('Error formatting limit price:', error)
+        // Fallback to original formatting
+        const formattedPrice = formatPriceForTickSize(price, state.selectedCoin)
+        setState(prev => ({ ...prev, limitPrice: formattedPrice }))
+      }
     }
   }
 
@@ -1071,24 +1150,7 @@ const TradingInterface: React.FC = () => {
     // Show confirmation popup instead of immediately submitting
     const coinSize = getCoinSizeForApi()
     const convertedSize = state.sizeUnit === 'USD' && coinSize > 0 
-      ? (() => {
-          // Extract base coin from coin pair (e.g., "BTC-PERP" -> "BTC")
-          const baseCoin = state.selectedCoin.toUpperCase().split('-')[0]
-          
-          // Use appropriate decimal places based on base coin
-          switch (baseCoin) {
-            case 'DOGE':
-              return coinSize.toFixed(0)
-            case 'BTC':
-              return coinSize.toFixed(5)
-            case 'ETH':
-              return coinSize.toFixed(4)
-            case 'SOL':
-              return coinSize.toFixed(2)
-            default:
-              return coinSize.toFixed(6)
-          }
-        })()
+      ? formatHyperliquidSizeSync(coinSize, state.selectedCoin)
       : undefined
 
     // Construct the actual order payload that will be sent to the server
@@ -1194,7 +1256,10 @@ const TradingInterface: React.FC = () => {
             state.side, 
             state.selectedCoin, 
             state.marginMode, 
-            parseFloat(accountInfo.availableToTrade || '0')
+            parseFloat(accountInfo.availableToTrade || '0'),
+            0, // position size - will be calculated
+            parseFloat(accountInfo.availableToTrade || '0') + parseFloat(accountInfo.marginRequired || '0'), // account value
+            state.marginMode === 'isolated' ? parseFloat(accountInfo.availableToTrade || '0') : 0 // isolated margin
           )
           
           // Handle negative liquidation price (very safe position in cross margin)
@@ -1424,11 +1489,11 @@ const TradingInterface: React.FC = () => {
            !error.includes('Failed to update margin mode') && 
            !error.includes('Cannot change margin mode while you have open positions') && (
             <div className="p-3 bg-red-900/20 border border-red-500 rounded flex items-center gap-2 text-red-400">
-              <AlertCircle size={16} />
-              <span className="text-sm">{error}</span>
-            </div>
-          )}
-          
+          <AlertCircle size={16} />
+          <span className="text-sm">{error}</span>
+        </div>
+      )}
+
         </div>
       )}
 
@@ -1618,14 +1683,6 @@ const TradingInterface: React.FC = () => {
           <div className="absolute inset-0 flex items-center justify-between px-4 pointer-events-none">
             {/* Left side - Coin name */}
             <div className="flex items-center gap-3">
-              {(() => {
-                const selectedCoinData = CONFIG.AVAILABLE_COINS.find(coin => coin.symbol === state.selectedCoin)
-                return (
-                  <>
-                    
-                  </>
-                )
-              })()}
             </div>
             
             {/* Right side - Price */}
@@ -1635,7 +1692,15 @@ const TradingInterface: React.FC = () => {
                 {priceError ? (
                   <span className="text-red-400">{priceError}</span>
                 ) : currentPrice ? (
-                  `$${currentPrice.toLocaleString()}`
+                  (() => {
+                    try {
+                      const formattedPrice = formatHyperliquidPriceSync(currentPrice, state.selectedCoin)
+                      return `$${formattedPrice}`
+                    } catch (error) {
+                      console.error('Error formatting current price:', error)
+                      return `$${currentPrice.toLocaleString()}`
+                    }
+                  })()
                 ) : priceConnected ? (
                   <span className="text-gray-400">Loading...</span>
                 ) : (
@@ -1659,7 +1724,7 @@ const TradingInterface: React.FC = () => {
             <div className="flex items-center gap-2 mb-2">
               <div className="w-2 h-2 rounded-full bg-teal-primary shadow-sm"></div>
               <span className="text-xs font-medium text-gray-400">Margin Mode</span>
-            </div>
+        </div>
             <div className="flex items-center gap-2">
               <span className="text-lg font-bold text-white capitalize">{state.marginMode}</span>
               <div className="toggle-indicator w-4 h-4 rounded-full bg-gray-600 flex items-center justify-center transition-all duration-200">
@@ -1694,16 +1759,16 @@ const TradingInterface: React.FC = () => {
              type="range"
              min="1"
              max="10"
-             value={state.leverage}
-             onChange={(e) => handleLeverageChange(parseInt(e.target.value))}
-             disabled={isLoading}
+            value={state.leverage}
+            onChange={(e) => handleLeverageChange(parseInt(e.target.value))}
+            disabled={isLoading}
              className="flex-1 h-3 bg-gray-700 rounded-lg appearance-none cursor-pointer slider"
              style={{
                background: `linear-gradient(to right, #14b8a6 0%, #14b8a6 ${((state.leverage - 1) / 9) * 100}%, #374151 ${((state.leverage - 1) / 9) * 100}%, #374151 100%)`
              }}
            />
            <span className="text-xs text-gray-400 font-medium min-w-[32px]">10x</span>
-          </div>
+        </div>
         </div>
  
       </div>
@@ -1822,21 +1887,16 @@ const TradingInterface: React.FC = () => {
             <span className="text-white">
               {(() => {
                 const coinSize = convertUsdToCoinSize(parseFloat(state.size), topCardPrice, state.selectedCoin)
-                // Extract base coin from coin pair (e.g., "BTC-PERP" -> "BTC")
-                const baseCoin = state.selectedCoin.toUpperCase().split('-')[0]
                 
-                // Show appropriate decimal places based on base coin
-                switch (baseCoin) {
-                  case 'DOGE':
-                    return `${coinSize.toFixed(0)} ${state.selectedCoin}`
-                  case 'BTC':
-                    return `${coinSize.toFixed(5)} ${state.selectedCoin}`
-                  case 'ETH':
-                    return `${coinSize.toFixed(4)} ${state.selectedCoin}`
-                  case 'SOL':
-                    return `${coinSize.toFixed(2)} ${state.selectedCoin}`
-                  default:
-                    return `${coinSize.toFixed(6)} ${state.selectedCoin}`
+                // Use Hyperliquid precision formatting
+                try {
+                  const formattedSize = formatHyperliquidSizeSync(coinSize, state.selectedCoin)
+                  return `${formattedSize} ${state.selectedCoin}`
+                } catch (error) {
+                  console.error('Error formatting coin size display:', error)
+                  // Fallback to Hyperliquid precision formatting
+                  const fallbackFormattedSize = formatHyperliquidSizeSync(coinSize, state.selectedCoin)
+                  return `${fallbackFormattedSize} ${state.selectedCoin}`
                 }
               })()}
             </span>
@@ -1897,30 +1957,30 @@ const TradingInterface: React.FC = () => {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-400">Start (USD)</span>
-                <input
-                  type="text"
-                  value={state.scaleStartPrice}
+              <input
+                type="text"
+                value={state.scaleStartPrice}
                   onChange={(e) => setState(prev => ({ ...prev, scaleStartPrice: e.target.value }))}
                   className="w-32 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white text-right focus:outline-none focus:border-teal-primary"
                   placeholder="0"
-                />
+              />
               </div>
               
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-400">End (USD)</span>
-                <input
-                  type="text"
-                  value={state.scaleEndPrice}
+              <input
+                type="text"
+                value={state.scaleEndPrice}
                   onChange={(e) => setState(prev => ({ ...prev, scaleEndPrice: e.target.value }))}
                   className="w-32 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white text-right focus:outline-none focus:border-teal-primary"
                   placeholder="0"
-                />
-              </div>
+              />
+            </div>
               
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-400">Total Orders</span>
-                <input
-                  type="text"
+              <input
+                type="text"
                   value={state.scaleOrderCount}
                   onChange={(e) => setState(prev => ({ ...prev, scaleOrderCount: e.target.value }))}
                   className="w-32 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white text-right focus:outline-none focus:border-teal-primary"
@@ -1930,14 +1990,14 @@ const TradingInterface: React.FC = () => {
               
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-400">Size Skew</span>
-                <input
-                  type="text"
+              <input
+                type="text"
                   value={state.scaleSizeSkew}
                   onChange={(e) => setState(prev => ({ ...prev, scaleSizeSkew: e.target.value }))}
                   className="w-32 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white text-right focus:outline-none focus:border-teal-primary"
                   placeholder="1"
-                />
-              </div>
+              />
+            </div>
             </div>
 
             {/* Reduce Only and TIF */}
@@ -1954,7 +2014,7 @@ const TradingInterface: React.FC = () => {
               
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-400">TIF</span>
-                <select
+              <select
                   value={state.timeInForce}
                   onChange={(e) => setState(prev => ({ ...prev, timeInForce: e.target.value as 'GTC' | 'IOC' | 'ALO' }))}
                   className="px-2 py-1 bg-dark-border border border-gray-600 rounded text-white text-sm focus:outline-none focus:border-teal-primary"
@@ -1962,7 +2022,7 @@ const TradingInterface: React.FC = () => {
                   <option value="GTC">GTC</option>
                   <option value="IOC">IOC</option>
                   <option value="ALO">ALO</option>
-                </select>
+              </select>
                 <ChevronDown size={12} className="text-gray-400" />
               </div>
             </div>
@@ -1992,7 +2052,8 @@ const TradingInterface: React.FC = () => {
                     const priceStep = (endPrice - startPrice) / Math.max(1, orderCount - 1)
                     
                     for (let i = 0; i < orderCount; i++) {
-                      const price = (startPrice + (priceStep * i)).toFixed(5)
+                      const rawPrice = startPrice + (priceStep * i)
+                      const price = formatHyperliquidPriceSync(rawPrice, state.selectedCoin)
                       // Calculate size based on size skew
                       // Size skew determines the ratio between end and start order sizes
                       // If size skew = 2.0, end order will be twice the size of start order
@@ -2012,16 +2073,13 @@ const TradingInterface: React.FC = () => {
                       const baseSize = totalSize / orderCount
                       const rawSize = baseSize * skewFactor * normalizationFactor
                       
-                      // Round to coin-specific precision
-                      const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
-                      const roundedSize = roundCoinSize(rawSize, baseCoin)
-                      
-                      const size = roundedSize.toFixed(6)
+                      // Use Hyperliquid precision formatting
+                      const formattedSize = formatHyperliquidSizeSync(rawSize, state.selectedCoin)
                       
                       orders.push(
                         <div key={i} className="flex justify-between text-xs">
                           <span className="text-gray-300">Order {i + 1}:</span>
-                          <span className="text-white">${price} × {parseFloat(size).toFixed(4)}</span>
+                          <span className="text-white">${price} × {formattedSize}</span>
                         </div>
                       )
                     }
@@ -2243,7 +2301,15 @@ const TradingInterface: React.FC = () => {
                   {priceError ? (
                     <span className="text-red-400 text-sm">Error</span>
                   ) : typeof topCardPrice === 'number' ? (
-                    `$${topCardPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 5 })}`
+                    (() => {
+                      try {
+                        const formattedPrice = formatHyperliquidPriceSync(topCardPrice, state.selectedCoin)
+                        return `$${formattedPrice}`
+                      } catch (error) {
+                        console.error('Error formatting market price:', error)
+                        return `$${topCardPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 5 })}`
+                      }
+                    })()
                   ) : priceConnected ? (
                     <span className="text-gray-400 text-sm">Loading...</span>
                   ) : (
@@ -2333,33 +2399,33 @@ const TradingInterface: React.FC = () => {
             </div>
           </div>
         )}
-      
+        
         
       </div>
 
       {/* Order Options - Hidden for Scale and TWAP Orders */}
       {state.orderType !== 'scale' && state.orderType !== 'twap' && (
-        <div className="mb-6 space-y-3">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={state.reduceOnly}
-              onChange={(e) => setState(prev => ({ ...prev, reduceOnly: e.target.checked }))}
-              className="w-4 h-4 text-teal-primary bg-dark-border border-gray-600 rounded focus:ring-teal-primary"
-            />
-            <span className="text-gray-300">Reduce Only</span>
-          </label>
-          
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={state.takeProfitStopLoss}
-              onChange={(e) => setState(prev => ({ ...prev, takeProfitStopLoss: e.target.checked }))}
-              className="w-4 h-4 text-teal-primary bg-dark-border border-gray-600 rounded focus:ring-teal-primary"
-            />
-            <span className="text-gray-300">Take Profit / Stop Loss</span>
-          </label>
-        </div>
+      <div className="mb-6 space-y-3">
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={state.reduceOnly}
+            onChange={(e) => setState(prev => ({ ...prev, reduceOnly: e.target.checked }))}
+            className="w-4 h-4 text-teal-primary bg-dark-border border-gray-600 rounded focus:ring-teal-primary"
+          />
+          <span className="text-gray-300">Reduce Only</span>
+        </label>
+        
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={state.takeProfitStopLoss}
+            onChange={(e) => setState(prev => ({ ...prev, takeProfitStopLoss: e.target.checked }))}
+            className="w-4 h-4 text-teal-primary bg-dark-border border-gray-600 rounded focus:ring-teal-primary"
+          />
+          <span className="text-gray-300">Take Profit / Stop Loss</span>
+        </label>
+      </div>
       )}
 
       {/* Validation Issues Display */}
@@ -2435,11 +2501,11 @@ const TradingInterface: React.FC = () => {
                   const baseSize = totalSize / orderCount
                   const rawSize = baseSize * skewFactor * normalizationFactor
                   
-                  // Round to coin-specific precision
-                  const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
-                  const roundedSize = roundCoinSize(rawSize, baseCoin)
+                  // Use Hyperliquid precision formatting
+                  const formattedSize = formatHyperliquidSizeSync(rawSize, state.selectedCoin)
                   
-                  return `${roundedSize.toFixed(6)} ${state.sizeUnit} @ $${startPrice.toFixed(5)}`
+                  const formattedStartPrice = formatHyperliquidPriceSync(startPrice, state.selectedCoin)
+                  return `${formattedSize} ${state.sizeUnit} @ $${formattedStartPrice}`
                 })()}
               </span>
             </div>
@@ -2479,11 +2545,11 @@ const TradingInterface: React.FC = () => {
                   const baseSize = totalSize / orderCount
                   const rawSize = baseSize * skewFactor * normalizationFactor
                   
-                  // Round to coin-specific precision
-                  const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
-                  const roundedSize = roundCoinSize(rawSize, baseCoin)
+                  // Use Hyperliquid precision formatting
+                  const formattedSize = formatHyperliquidSizeSync(rawSize, state.selectedCoin)
                   
-                  return `${roundedSize.toFixed(6)} ${state.sizeUnit} @ $${endPrice.toFixed(5)}`
+                  const formattedEndPrice = formatHyperliquidPriceSync(endPrice, state.selectedCoin)
+                  return `${formattedSize} ${state.sizeUnit} @ $${formattedEndPrice}`
                 })()}
               </span>
             </div>
@@ -2516,11 +2582,11 @@ const TradingInterface: React.FC = () => {
                     const baseSize = totalSize / orderCount
                     const rawSize = baseSize * skewFactor
                     
-                    // Round to coin-specific precision
-                    const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
-                    const roundedSize = roundCoinSize(rawSize, baseCoin)
+                    // Use Hyperliquid precision formatting
+                    const formattedSize = formatHyperliquidSizeSync(rawSize, state.selectedCoin)
+                    const sizeValue = parseFloat(formattedSize)
                     
-                    totalValue += roundedSize * price
+                    totalValue += sizeValue * price
                   }
                   
                   return `$${totalValue.toFixed(2)}`
@@ -2585,11 +2651,11 @@ const TradingInterface: React.FC = () => {
                     const baseSize = totalSize / orderCount
                     const rawSize = baseSize * skewFactor
                     
-                    // Round to coin-specific precision
-                    const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
-                    const roundedSize = roundCoinSize(rawSize, baseCoin)
+                    // Use Hyperliquid precision formatting
+                    const formattedSize = formatHyperliquidSizeSync(rawSize, state.selectedCoin)
+                    const sizeValue = parseFloat(formattedSize)
                     
-                    totalValue += roundedSize * price
+                    totalValue += sizeValue * price
                   }
                   
                   const margin = totalValue / state.leverage
@@ -2597,96 +2663,106 @@ const TradingInterface: React.FC = () => {
                 })()}
               </span>
             </div>
-            <div className="flex justify-between">
+            {/* <div className="flex justify-between">
               <span className="text-gray-400">Fees:</span>
               <span className="text-white">0.0450% / 0.0150%</span>
-            </div>
+            </div> */}
           </>
         ) : (
           <>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Liquidation Price:</span>
-              <span className="text-white">
-                {(() => {
-                  if (state.size && typeof topCardPrice === 'number') {
-                    // Calculate liquidation price based on order parameters
-                    const entryPrice = state.orderType === 'limit' && state.limitPrice 
-                      ? parseFloat(state.limitPrice) 
-                      : topCardPrice // Use current price for market orders
-                    const leverage = state.leverage
-                    
-                    const liquidationPrice = calculateLiquidationPrice(entryPrice, leverage, state.side, state.selectedCoin, state.marginMode, parseFloat(accountInfo.availableToTrade || '0'))
+        <div className="flex justify-between">
+          <span className="text-gray-400">Liquidation Price:</span>
+          <span className="text-white">
+            {(() => {
+              if (state.size && typeof topCardPrice === 'number') {
+                // Calculate liquidation price based on order parameters
+                const entryPrice = state.orderType === 'limit' && state.limitPrice 
+                  ? parseFloat(state.limitPrice) 
+                  : topCardPrice // Use current price for market orders
+                const leverage = state.leverage
+                
+                    const liquidationPrice = calculateLiquidationPrice(
+                      entryPrice, 
+                      leverage, 
+                      state.side, 
+                      state.selectedCoin, 
+                      state.marginMode, 
+                      parseFloat(accountInfo.availableToTrade || '0'),
+                      0, // position size - will be calculated
+                      parseFloat(accountInfo.availableToTrade || '0') + parseFloat(accountInfo.marginRequired || '0'), // account value
+                      state.marginMode === 'isolated' ? parseFloat(accountInfo.availableToTrade || '0') : 0 // isolated margin
+                    )
                     
                     // Handle negative liquidation price (very safe position in cross margin)
                     if (liquidationPrice < 0) {
                       return `Very Safe (${liquidationPrice.toFixed(2)})`
                     }
                     
-                    return `$${liquidationPrice.toFixed(2)}`
-                  }
-                  return 'N/A'
-                })()}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Order Value:</span>
-              <span className="text-white">
-                {(() => {
-                  // Check if size is valid
-                  const sizeValue = parseFloat(state.size || '0')
-                  const isValidSize = !isNaN(sizeValue) && sizeValue > 0
-                  
-                  if (state.size && state.sizeUnit === 'USD' && isValidSize) {
-                    return `$${sizeValue.toFixed(2)}`
-                  } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number' && isValidSize) {
-                    const value = sizeValue * topCardPrice
-                    return `$${value.toFixed(2)}`
-                  }
-                  return 'N/A'
-                })()}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Margin Required:</span>
-              <span className="text-white">
-                {(() => {
-                  if (state.size && state.sizeUnit === 'USD') {
-                    const margin = parseFloat(state.size) / state.leverage
-                    return `$${margin.toFixed(2)}`
-                  } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number') {
-                    const value = parseFloat(state.size) * topCardPrice
-                    const margin = value / state.leverage
-                    return `$${margin.toFixed(2)}`
-                  }
-                  return 'N/A'
-                })()}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Slippage:</span>
-              <span className="text-white">
-                {state.orderType === 'market' ? 'Est: 0.1% / Max: 0.5%' : 'Est: 0% / Max: 0.1%'}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Fees:</span>
-              <span className="text-green-400 flex items-center gap-1">
-                <TrendingUp size={14} />
-                {(() => {
-                  if (state.size && state.sizeUnit === 'USD') {
+                return `$${liquidationPrice.toFixed(2)}`
+              }
+              return 'N/A'
+            })()}
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-gray-400">Order Value:</span>
+          <span className="text-white">
+            {(() => {
+              // Check if size is valid
+              const sizeValue = parseFloat(state.size || '0')
+              const isValidSize = !isNaN(sizeValue) && sizeValue > 0
+              
+              if (state.size && state.sizeUnit === 'USD' && isValidSize) {
+                return `$${sizeValue.toFixed(2)}`
+              } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number' && isValidSize) {
+                const value = sizeValue * topCardPrice
+                return `$${value.toFixed(2)}`
+              }
+              return 'N/A'
+            })()}
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-gray-400">Margin Required:</span>
+          <span className="text-white">
+            {(() => {
+              if (state.size && state.sizeUnit === 'USD') {
+                const margin = parseFloat(state.size) / state.leverage
+                return `$${margin.toFixed(2)}`
+              } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number') {
+                const value = parseFloat(state.size) * topCardPrice
+                const margin = value / state.leverage
+                return `$${margin.toFixed(2)}`
+              }
+              return 'N/A'
+            })()}
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-gray-400">Slippage:</span>
+          <span className="text-white">
+            {state.orderType === 'market' ? 'Est: 0.1% / Max: 0.5%' : 'Est: 0% / Max: 0.1%'}
+          </span>
+        </div>
+            {/* <div className="flex justify-between">
+          <span className="text-gray-400">Fees:</span>
+          <span className="text-green-400 flex items-center gap-1">
+            <TrendingUp size={14} />
+            {(() => {
+              if (state.size && state.sizeUnit === 'USD') {
                     const makerFee = TradingConfigHelper.calculateMakerFee(parseFloat(state.size))
                     const takerFee = TradingConfigHelper.calculateTakerFee(parseFloat(state.size))
-                    return `${(makerFee * 100).toFixed(4)}% / ${(takerFee * 100).toFixed(4)}%`
-                  } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number') {
-                    const value = parseFloat(state.size) * topCardPrice
+                return `${(makerFee * 100).toFixed(4)}% / ${(takerFee * 100).toFixed(4)}%`
+              } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number') {
+                const value = parseFloat(state.size) * topCardPrice
                     const makerFee = TradingConfigHelper.calculateMakerFee(value)
                     const takerFee = TradingConfigHelper.calculateTakerFee(value)
-                    return `${(makerFee * 100).toFixed(4)}% / ${(takerFee * 100).toFixed(4)}%`
-                  }
-                  return '0.01% / 0.02%'
-                })()}
-              </span>
-            </div>
+                return `${(makerFee * 100).toFixed(4)}% / ${(takerFee * 100).toFixed(4)}%`
+              }
+              return '0.01% / 0.02%'
+            })()}
+          </span>
+            </div> */}
           </>
         )}
       </div>

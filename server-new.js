@@ -47,6 +47,25 @@ let twapTaskCounter = 0
 
 const getNetworkName = () => (CONFIG.USE_TESTNET ? 'testnet' : 'mainnet')
 
+// Get minimum order size based on szDecimals
+const getMinOrderSize = (coin) => {
+  const szDecimalsMap = {
+    'DOGE-PERP': 0,
+    'BTC-PERP': 5,
+    'ETH-PERP': 2,
+    'SOL-PERP': 2,
+    'AVAX-PERP': 2,
+    'MATIC-PERP': 2,
+    'LINK-PERP': 2,
+    'UNI-PERP': 2,
+    'AAVE-PERP': 2,
+    'CRV-PERP': 2,
+  }
+  
+  const szDecimals = szDecimalsMap[coin] || 6
+  return Math.pow(10, -szDecimals)
+}
+
 const broadcastPrices = (prices = latestPrices) => {
   if (!prices || Object.keys(prices).length === 0) {
     return
@@ -283,12 +302,20 @@ app.get('/api/market-data', async (req, res) => {
     
     meta.universe.forEach(asset => {
       if (asset.name) {
+        console.log(`🔍 Asset ${asset.name} metadata:`, {
+          hasSzDecimals: 'szDecimals' in asset,
+          hasPxDecimals: 'pxDecimals' in asset,
+          szDecimals: asset.szDecimals,
+          pxDecimals: asset.pxDecimals,
+          allKeys: Object.keys(asset)
+        })
+        
         prices[asset.name] = {
           price: asset.markPrice,
           change24h: asset.change24h,
           volume24h: asset.volume24h,
           szDecimals: asset.szDecimals,
-          pxDecimals: asset.pxDecimals
+          pxDecimals: asset.pxDecimals || 4 // 默认值，如果API没有提供
         }
       }
     })
@@ -524,8 +551,21 @@ app.post('/api/place-order', async (req, res) => {
         }
       }
       
+    // Get asset ID with proper error handling
+    let assetId
+    try {
+      assetId = await getAssetId(orderData.coin)
+    } catch (error) {
+      console.error(`❌ Failed to get asset ID for ${orderData.coin}:`, error.message)
+      return res.status(400).json({ 
+        error: `Asset ${orderData.coin} not found or API unavailable. Asset IDs are environment-specific and cannot be hardcoded.`,
+        details: error.message,
+        suggestion: 'Please ensure the asset exists in the current environment and API is accessible.'
+      })
+    }
+
     const hyperliquidOrder = {
-        a: await getAssetId(orderData.coin),
+        a: assetId,
         b: orderData.is_buy,
         p: price,
         r: orderData.reduce_only || false,
@@ -1212,14 +1252,18 @@ const getAssetId = async (coinName) => {
     // Check if we have a recent cache
     const now = Date.now()
     if (Object.keys(assetIdCache).length > 0 && (now - assetIdCacheTimestamp) < ASSET_ID_CACHE_DURATION) {
-      console.log(`📋 Using cached asset ID for ${coinName}: ${assetIdCache[coinName]}`)
-      return assetIdCache[coinName] || 0
+      const cachedId = assetIdCache[coinName]
+      if (cachedId !== undefined) {
+        console.log(`📋 Using cached asset ID for ${coinName}: ${cachedId}`)
+        return cachedId
+      }
     }
 
     // Fetch fresh data from API
     if (!infoClient) {
-      console.log(`⚠️ InfoClient not available, using fallback for ${coinName}`)
-      return getFallbackAssetId(coinName)
+      console.error(`❌ InfoClient not available - cannot fetch asset ID for ${coinName}`)
+      console.error(`❌ Asset IDs are environment-specific and cannot be hardcoded`)
+      throw new Error(`Cannot fetch asset ID for ${coinName} - API unavailable`)
     }
 
     console.log(`🔄 Fetching fresh asset IDs from API for ${coinName}`)
@@ -1240,48 +1284,39 @@ const getAssetId = async (coinName) => {
       assetIdCacheTimestamp = now
       
       console.log(`✅ Updated asset ID cache:`, Object.keys(assetIdCache).slice(0, 10), '...')
-      console.log(`📋 Asset ID for ${coinName}: ${assetIdCache[coinName]}`)
       
-      return assetIdCache[coinName] || 0
+      const assetId = assetIdCache[coinName]
+      if (assetId !== undefined) {
+        console.log(`📋 Asset ID for ${coinName}: ${assetId}`)
+        return assetId
+      } else {
+        console.error(`❌ Asset ${coinName} not found in universe`)
+        console.error(`❌ Available assets:`, Object.keys(assetIdCache).slice(0, 20))
+        throw new Error(`Asset ${coinName} not found in universe`)
+      }
+    } else {
+      throw new Error('Invalid meta response from API')
     }
   } catch (error) {
     console.error(`❌ Failed to fetch asset ID for ${coinName}:`, error)
+    console.error(`❌ Asset IDs are environment-specific and cannot be hardcoded`)
+    console.error(`❌ This will cause order placement to fail`)
+    throw error
   }
-  
-  // Fallback to hardcoded values if API fails
-  return getFallbackAssetId(coinName)
 }
 
 // Fallback asset ID mapping (used when API is unavailable)
+// WARNING: These are hardcoded values that may not work across different environments
+// This should only be used as a last resort when the API is completely unavailable
 const getFallbackAssetId = (coinName) => {
-  const fallbackMap = {
-    'BTC-PERP': 3,
-    'ETH-PERP': 4,
-    'DOGE-PERP': 173,
-    'SOL-PERP': 2,
-    'AVAX-PERP': 7,
-    'MATIC-PERP': 1,
-    'ARB-PERP': 5,
-    'OP-PERP': 6,
-    'SUI-PERP': 8,
-    'APT-PERP': 9,
-    'NEAR-PERP': 10,
-    'ATOM-PERP': 11,
-    'DOT-PERP': 12,
-    'LINK-PERP': 13,
-    'UNI-PERP': 14,
-    'AAVE-PERP': 15,
-    'CRV-PERP': 16,
-    'MKR-PERP': 17,
-    'COMP-PERP': 18,
-    'YFI-PERP': 19,
-    'SNX-PERP': 20,
-    'SUSHI-PERP': 21
-  }
+  console.warn(`⚠️ WARNING: Using hardcoded fallback asset ID for ${coinName}`)
+  console.warn(`⚠️ This may not work correctly in different environments (mainnet/testnet)`)
+  console.warn(`⚠️ Asset IDs vary between mainnet and testnet, and between token and spot assets`)
   
-  const assetId = fallbackMap[coinName] || 0
-  console.log(`🔄 Using fallback asset ID for ${coinName}: ${assetId}`)
-  return assetId
+  // Return 0 to indicate no valid asset ID found
+  // This will cause the order to fail gracefully rather than using incorrect asset IDs
+  console.log(`❌ No fallback asset ID available for ${coinName} - API required`)
+  return 0
 }
 
 // Helper function to format price for tick size
@@ -1376,29 +1411,58 @@ const getSizePrecision = (increment) => {
   return incrementStr.split('.')[1].length
 }
 
-const getMinOrderSize = (coin) => {
-  const minSizes = {
-    'DOGE-PERP': 1,
-    'BTC-PERP': 0.00001, // Updated from 0.0001
-    'ETH-PERP': 0.001,
-    'SOL-PERP': 0.1,
-    'AVAX-PERP': 0.1
-  }
 
-  return minSizes[coin] || 0.001
+// 从API元数据获取szDecimals
+const getSzDecimalsFromMeta = (coin) => {
+  try {
+    if (!infoClient) {
+      console.warn('InfoClient not available, using default szDecimals')
+      return getDefaultSzDecimals(coin)
+    }
+    
+    // 从缓存的元数据中获取szDecimals
+    const meta = infoClient.meta()
+    if (meta && meta.universe) {
+      const asset = meta.universe.find(a => a.name === coin)
+      if (asset && typeof asset.szDecimals === 'number') {
+        return asset.szDecimals
+      }
+    }
+    
+    console.warn(`szDecimals not found for ${coin}, using default`)
+    return getDefaultSzDecimals(coin)
+  } catch (error) {
+    console.error(`Error getting szDecimals for ${coin}:`, error)
+    return getDefaultSzDecimals(coin)
+  }
+}
+
+// 默认szDecimals配置
+const getDefaultSzDecimals = (coin) => {
+  const defaults = {
+    'DOGE-PERP': 0,
+    'BTC-PERP': 5,
+    'ETH-PERP': 2,
+    'SOL-PERP': 2,
+    'AVAX-PERP': 2
+  }
+  return defaults[coin] || 2
 }
 
 const getFormattedSubOrderSizes = (task) => {
-  const sizeIncrement = task.sizeIncrement || getSizeIncrement(task.coin)
-  const sizePrecision = Number.isInteger(task.sizePrecision)
-    ? task.sizePrecision
-    : getSizePrecision(sizeIncrement)
+  // 使用从API获取的szDecimals，而不是硬编码的精度
+  const szDecimals = getSzDecimalsFromMeta(task.coin)
+  const sizePrecision = szDecimals
 
   const rawSizes = Array.isArray(task.subOrderSizes) && task.subOrderSizes.length > 0
     ? task.subOrderSizes
     : Array(parseInt(task.intervals, 10) || 0).fill(task.totalSize / task.intervals)
 
-  const formattedSizes = rawSizes.map(size => Number(size).toFixed(sizePrecision))
+  // 使用Hyperliquid精度规则格式化大小
+  const formattedSizes = rawSizes.map(size => {
+    const roundedSize = Math.round(size * Math.pow(10, sizePrecision)) / Math.pow(10, sizePrecision)
+    return roundedSize.toFixed(sizePrecision)
+  })
 
   return {
     sizePrecision,
@@ -1409,8 +1473,9 @@ const getFormattedSubOrderSizes = (task) => {
 }
 
 const distributeSubOrderSizes = (totalSize, intervals, coin) => {
-  const increment = getSizeIncrement(coin)
-  const precision = getSizePrecision(increment)
+  // 使用从API获取的szDecimals，而不是硬编码的精度
+  const szDecimals = getSzDecimalsFromMeta(coin)
+  const precision = szDecimals
   const minSize = getMinOrderSize(coin)
   const intervalCount = parseInt(intervals, 10)
 
@@ -1423,21 +1488,20 @@ const distributeSubOrderSizes = (totalSize, intervals, coin) => {
     throw new Error('Invalid total size for TWAP order')
   }
 
-  const rawUnits = sanitizedTotalSize / increment
-  let totalUnits = Math.round(rawUnits)
-  if (Math.abs(totalUnits - rawUnits) > 1e-6) {
-    totalUnits = Math.floor(rawUnits)
-  }
-  if (totalUnits <= 0) {
-    throw new Error('Total size is too small for the selected coin increment')
-  }
-
-  if (totalUnits < intervalCount) {
+  // 直接使用szDecimals进行精度处理，而不是基于increment
+  const baseSize = sanitizedTotalSize / intervalCount
+  const roundedBaseSize = Math.round(baseSize * Math.pow(10, precision)) / Math.pow(10, precision)
+  
+  if (roundedBaseSize <= 0) {
     throw new Error('Total size is too small for the requested number of intervals')
   }
 
-  const baseUnits = Math.floor(totalUnits / intervalCount)
-  const remainder = totalUnits - (baseUnits * intervalCount)
+  if (roundedBaseSize < minSize) {
+    throw new Error(`Sub-order size ${roundedBaseSize} is below minimum ${minSize}`)
+  }
+
+  const baseUnits = Math.floor(sanitizedTotalSize / roundedBaseSize)
+  const remainder = sanitizedTotalSize - (baseUnits * roundedBaseSize)
 
   if (baseUnits === 0) {
     throw new Error('Total size is too small for the requested number of intervals')
@@ -1551,15 +1615,7 @@ const executeTwapOrder = async (task, orderIndex) => {
 
     // Add validation for minimum order size and USD value
     const coinName = task.coin.replace('-PERP', '')
-    const minOrderSizes = {
-      'DOGE': 1,      // Minimum 1 DOGE
-      'BTC': 0.00001, // Minimum 0.00001 BTC
-      'ETH': 0.0001,  // Minimum 0.0001 ETH
-      'SOL': 0.1,     // Minimum 0.1 SOL
-      'AVAX': 0.1,    // Minimum 0.1 AVAX
-    }
-    
-    const minSize = minOrderSizes[coinName] || 0.001
+    const minSize = getMinOrderSize(task.coin)
     if (sizeNumber < minSize) {
       throw new Error(`Sub-order size ${sizeString || 'undefined'} ${coinName} is too small. Minimum: ${minSize} ${coinName}`)
     }
@@ -1628,7 +1684,15 @@ const executeTwapOrder = async (task, orderIndex) => {
       assetId: await getAssetId(task.coin)
     })
     
-    const assetId = await getAssetId(task.coin)
+    // Get asset ID with proper error handling
+    let assetId
+    try {
+      assetId = await getAssetId(task.coin)
+    } catch (error) {
+      console.error(`❌ Failed to get asset ID for TWAP order ${task.coin}:`, error.message)
+      throw new Error(`Asset ${task.coin} not found or API unavailable. Asset IDs are environment-specific and cannot be hardcoded.`)
+    }
+
     const result = await exchangeClient.order({
       orders: [{
         a: assetId,

@@ -23,22 +23,11 @@ export const TRADING_CONFIG = {
     TASK_CLEANUP_DELAY: 30000, // 30 seconds
   },
 
-  // Minimum order sizes for different coins
-  MIN_ORDER_SIZES: {
-    'DOGE-PERP': 1,
-    'BTC-PERP': 0.00001,
-    'ETH-PERP': 0.01,  // Increased from 0.0001 to 0.01
-    'SOL-PERP': 0.1,
-    'AVAX-PERP': 0.1,
-    'MATIC-PERP': 0.1,
-    'LINK-PERP': 0.1,
-    'UNI-PERP': 0.1,
-    'AAVE-PERP': 0.1,
-    'CRV-PERP': 0.1,
-  },
+  // Minimum order sizes are now calculated dynamically based on szDecimals
+  // Formula: minSize = 1 / 10^szDecimals
 
-  // Rounding precision for different coins (decimal places)
-  ROUNDING_PRECISION: {
+  // Size decimals for different coins (szDecimals)
+  SZ_DECIMALS: {
     'DOGE-PERP': 0,    // Round to integer
     'BTC-PERP': 5,     // 5 decimal places (0.00001)
     'ETH-PERP': 2,     // 2 decimal places (0.01) - Updated to match new min size
@@ -49,6 +38,20 @@ export const TRADING_CONFIG = {
     'UNI-PERP': 2,     // 2 decimal places (0.01)
     'AAVE-PERP': 2,    // 2 decimal places (0.01)
     'CRV-PERP': 2,     // 2 decimal places (0.01)
+  },
+
+  // Price decimals for different coins (pxDecimals)
+  PX_DECIMALS: {
+    'DOGE-PERP': 5,    // 5 decimal places
+    'BTC-PERP': 1,     // 1 decimal place
+    'ETH-PERP': 2,     // 2 decimal places
+    'SOL-PERP': 3,     // 3 decimal places
+    'AVAX-PERP': 3,    // 3 decimal places
+    'MATIC-PERP': 4,   // 4 decimal places
+    'LINK-PERP': 4,    // 4 decimal places
+    'UNI-PERP': 4,     // 4 decimal places
+    'AAVE-PERP': 2,    // 2 decimal places
+    'CRV-PERP': 4,     // 4 decimal places
   },
 
   // Default precision for unknown coins
@@ -70,17 +73,35 @@ export const TRADING_CONFIG = {
 // Helper functions for configuration access
 export class TradingConfigHelper {
   /**
-   * Get minimum order size for a specific coin
+   * Get minimum order size for a specific coin based on szDecimals
    */
   static getMinOrderSize(coin: string): number {
-    return TRADING_CONFIG.MIN_ORDER_SIZES[coin as keyof typeof TRADING_CONFIG.MIN_ORDER_SIZES] || 0.001
+    const szDecimals = this.getSzDecimals(coin)
+    // 最小订单大小 = 1 / 10^szDecimals
+    // 例如：szDecimals=5 -> 0.00001, szDecimals=2 -> 0.01, szDecimals=0 -> 1
+    return Math.pow(10, -szDecimals)
   }
 
   /**
-   * Get rounding precision for a specific coin
+   * Get size decimals for a specific coin (szDecimals)
+   */
+  static getSzDecimals(coin: string): number {
+    return TRADING_CONFIG.SZ_DECIMALS[coin as keyof typeof TRADING_CONFIG.SZ_DECIMALS] || TRADING_CONFIG.DEFAULT_PRECISION
+  }
+
+  /**
+   * Get price decimals for a specific coin (pxDecimals)
+   */
+  static getPxDecimals(coin: string): number {
+    return TRADING_CONFIG.PX_DECIMALS[coin as keyof typeof TRADING_CONFIG.PX_DECIMALS] || 4
+  }
+
+  /**
+   * Get rounding precision for a specific coin (deprecated - use getSzDecimals)
+   * @deprecated Use getSzDecimals instead
    */
   static getRoundingPrecision(coin: string): number {
-    return TRADING_CONFIG.ROUNDING_PRECISION[coin as keyof typeof TRADING_CONFIG.ROUNDING_PRECISION] || TRADING_CONFIG.DEFAULT_PRECISION
+    return this.getSzDecimals(coin)
   }
 
   /**
@@ -199,5 +220,7 @@ export class TradingConfigHelper {
 
 // Export individual config sections for easier imports
 export const TIMING_CONFIG = TRADING_CONFIG.TIMING
-export const MIN_ORDER_SIZES = TRADING_CONFIG.MIN_ORDER_SIZES
-export const ROUNDING_PRECISION = TRADING_CONFIG.ROUNDING_PRECISION
+export const SZ_DECIMALS = TRADING_CONFIG.SZ_DECIMALS
+export const PX_DECIMALS = TRADING_CONFIG.PX_DECIMALS
+// Deprecated exports for backward compatibility
+export const ROUNDING_PRECISION = TRADING_CONFIG.SZ_DECIMALS

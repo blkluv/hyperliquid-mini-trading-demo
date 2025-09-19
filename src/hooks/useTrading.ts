@@ -3,6 +3,7 @@ import toast from 'react-hot-toast'
 import { hyperliquidService, LeverageParams, OrderParams } from '../services/hyperliquidService'
 import { CONFIG } from '../config/config'
 import { TradingConfigHelper } from '../config/tradingConfig'
+import { formatHyperliquidPriceSync, formatHyperliquidSizeSync } from '../utils/hyperliquidPrecision'
 
 export interface TradingState {
   selectedCoin: string
@@ -224,10 +225,14 @@ export const useTrading = () => {
             const coinName = position.coin || state.selectedCoin?.replace('-PERP', '') || 'BTC'
             
             if (size === 0) {
-              currentPosition = `0.00000 ${coinName}`
+              // Use Hyperliquid precision for zero position
+              const formattedSize = formatHyperliquidSizeSync(0, state.selectedCoin || 'BTC-PERP')
+              currentPosition = `${formattedSize} ${coinName}`
             } else {
               const side = size > 0 ? 'Long' : 'Short'
-              currentPosition = `${Math.abs(size).toFixed(5)} ${coinName} (${side})`
+              // Use Hyperliquid precision for position size
+              const formattedSize = formatHyperliquidSizeSync(Math.abs(size), state.selectedCoin || 'BTC-PERP')
+              currentPosition = `${formattedSize} ${coinName} (${side})`
             }
             
             liquidationPrice = position.liquidationPx || 'N/A'
@@ -256,16 +261,9 @@ export const useTrading = () => {
       errors.push('Order size must be greater than 0')
     }
 
-    // Check minimum order size based on coin
-    const minCoinSizes: { [key: string]: number } = {
-      'DOGE-PERP': 1,
-      'BTC-PERP': 0.00001,
-      'ETH-PERP': 0.0001,
-      'SOL-PERP': 0.1,
-      'AVAX-PERP': 0.1
-    }
-    
-    const coinMinSize = minCoinSizes[state.selectedCoin] || 0.001
+
+    // Check minimum order size using TradingConfigHelper
+    const coinMinSize = TradingConfigHelper.getMinOrderSize(state.selectedCoin)
     if (parseFloat(state.size) < coinMinSize) {
       const coinName = state.selectedCoin?.replace('-PERP', '') || 'tokens'
       errors.push(`Minimum order size is ${coinMinSize} ${coinName}`)
@@ -286,6 +284,7 @@ export const useTrading = () => {
         if (!state.scaleEndPrice || parseFloat(state.scaleEndPrice) <= 0) {
           errors.push('Scale end price must be greater than 0')
         }
+        
         if (!state.scaleOrderCount || parseInt(state.scaleOrderCount) <= 0) {
           errors.push('Scale order count must be greater than 0')
         }
@@ -515,7 +514,7 @@ export const useTrading = () => {
 
     for (let i = 0; i < orderCount; i++) {
       const rawPrice = startPrice + (priceStep * i)
-      const price = formatPriceForTickSize(rawPrice, state.selectedCoin)
+      const price = formatHyperliquidPriceSync(rawPrice, state.selectedCoin)
       let size = totalSize / orderCount // Base size
       
       // Apply size skew with normalization
@@ -524,32 +523,13 @@ export const useTrading = () => {
         size = size * skewFactor * normalizationFactor
       }
       
-      // Round to coin-specific precision
-      const baseCoin = state.selectedCoin?.toUpperCase().split('-')[0] || 'BTC'
-      let roundedSize
-      switch (baseCoin) {
-        case 'DOGE':
-          roundedSize = Math.round(size) // Round to integer
-          break
-        case 'BTC':
-          roundedSize = Math.round(size * 100000) / 100000 // 5 decimal places
-          break
-        case 'ETH':
-          roundedSize = Math.round(size * 10000) / 10000 // 4 decimal places
-          break
-        case 'SOL':
-          roundedSize = Math.round(size * 100) / 100 // 2 decimal places
-          break
-        default:
-          roundedSize = Math.round(size * 1000000) / 1000000 // 6 decimal places
-      }
-      
-      size = roundedSize
+      // Format size using Hyperliquid precision
+      const formattedSize = formatHyperliquidSizeSync(size, state.selectedCoin)
 
       const orderParams: OrderParams = {
         coin: state.selectedCoin,
         is_buy: state.side === 'buy',
-        sz: size.toFixed(4),
+        sz: formattedSize,
         reduce_only: state.reduceOnly,
         order_type: getOrderType('limit', 'GTC'), // Scale orders are limit orders with GTC
         limit_px: price
@@ -557,11 +537,11 @@ export const useTrading = () => {
 
       try {
         const result = await hyperliquidService.placeOrder(orderParams)
-        results.push({ order: i + 1, result, price, size: size.toFixed(4) })
-        console.log(`Scale order ${i + 1} placed: $${price} × ${size.toFixed(4)}`)
+        results.push({ order: i + 1, result, price, size: formattedSize })
+        console.log(`Scale order ${i + 1} placed: $${price} × ${formattedSize}`)
       } catch (err) {
         console.error(`Failed to place scale order ${i + 1}:`, err)
-        results.push({ order: i + 1, error: err, price, size: size.toFixed(4) })
+        results.push({ order: i + 1, error: err, price, size: formattedSize })
       }
     }
 
@@ -610,26 +590,8 @@ export const useTrading = () => {
     // Calculate raw sub-order size
     const rawSubOrderSize = totalSize / numberOfOrders
     
-    // Apply coin-specific rounding (same as UI)
-    const baseCoin = state.selectedCoin?.replace('-PERP', '') || 'COIN'
-    let roundedSubOrderSize: number
-    
-    switch (baseCoin) {
-      case 'DOGE':
-        roundedSubOrderSize = Math.ceil(rawSubOrderSize)
-        break
-      case 'BTC':
-        roundedSubOrderSize = Math.ceil(rawSubOrderSize * 100000) / 100000
-        break
-      case 'ETH':
-        roundedSubOrderSize = Math.ceil(rawSubOrderSize * 10000) / 10000
-        break
-      case 'SOL':
-        roundedSubOrderSize = Math.ceil(rawSubOrderSize * 100) / 100
-        break
-      default:
-        roundedSubOrderSize = Math.ceil(rawSubOrderSize * 1000000) / 1000000
-    }
+    // Apply Hyperliquid precision formatting
+    const roundedSubOrderSize = parseFloat(formatHyperliquidSizeSync(rawSubOrderSize, state.selectedCoin))
 
     // Calculate sub-order USD value either from provided USD size or market price
     const totalUsdValue = (() => {
@@ -660,16 +622,9 @@ export const useTrading = () => {
       return
     }
 
-    const minCoinSizes: { [key: string]: number } = {
-      'DOGE-PERP': 1,
-      'BTC-PERP': 0.00001,
-      'ETH-PERP': 0.0001,
-      'SOL-PERP': 0.1,
-      'AVAX-PERP': 0.1
-    }
-
-    const coinMinSize = minCoinSizes[state.selectedCoin] || 0
-    if (coinMinSize > 0 && roundedSubOrderSize < coinMinSize) {
+    // Check minimum order size using TradingConfigHelper
+    const coinMinSize = TradingConfigHelper.getMinOrderSize(state.selectedCoin)
+    if (roundedSubOrderSize < coinMinSize) {
       const coinLabel = state.selectedCoin?.replace('-PERP', '') || 'asset'
       setError(`Sub-order size too small. Each sub-order would be ${roundedSubOrderSize.toFixed(4)} ${coinLabel}, but minimum is ${coinMinSize} ${coinLabel}`)
       return
@@ -846,28 +801,26 @@ export const useTrading = () => {
     }
   }, [loadAccountData])
 
-  // Helper function to format price according to tick size requirements
+  // Helper function to format price according to Hyperliquid precision requirements
   const formatPriceForTickSize = (price: number, coin: string): string => {
-    // Extract base coin from coin pair (e.g., "BTC-PERP" -> "BTC")
-    const baseCoin = coin.toUpperCase().split('-')[0]
-    
-    // Define tick sizes for different assets
-    const tickSizes: { [key: string]: number } = {
-      'BTC': 0.5,      // BTC tick size is typically 0.5
-      'ETH': 0.05,     // ETH tick size is typically 0.05
-      'SOL': 0.01,     // SOL tick size is typically 0.01
-      'DOGE': 0.0001,  // DOGE tick size is typically 0.0001
-      'default': 0.01  // Default tick size
+    try {
+      return formatHyperliquidPriceSync(price, coin)
+    } catch (error) {
+      console.error('Error formatting price:', error)
+      // Fallback to original logic if precision formatting fails
+      const baseCoin = coin.toUpperCase().split('-')[0]
+      const tickSizes: { [key: string]: number } = {
+        'BTC': 0.5,
+        'ETH': 0.05,
+        'SOL': 0.01,
+        'DOGE': 0.0001,
+        'default': 0.01
+      }
+      const tickSize = tickSizes[baseCoin] || tickSizes.default
+      const roundedPrice = Math.round(price / tickSize) * tickSize
+      const decimalPlaces = tickSize < 1 ? Math.abs(Math.log10(tickSize)) : 0
+      return roundedPrice.toFixed(decimalPlaces)
     }
-    
-    const tickSize = tickSizes[baseCoin] || tickSizes.default
-    
-    // Round price to nearest tick size
-    const roundedPrice = Math.round(price / tickSize) * tickSize
-    
-    // Format with appropriate decimal places
-    const decimalPlaces = tickSize < 1 ? Math.abs(Math.log10(tickSize)) : 0
-    return roundedPrice.toFixed(decimalPlaces)
   }
 
   // Helper function to get order type
@@ -970,21 +923,29 @@ export const useTrading = () => {
           const coinName = position.coin || coin
           
           if (size === 0) {
-            return `0.00000 ${coinName}`
+            // Use Hyperliquid precision for zero position
+            const formattedSize = formatHyperliquidSizeSync(0, coin)
+            return `${formattedSize} ${coinName}`
           } else {
             const side = size > 0 ? 'Long' : 'Short'
-            return `${Math.abs(size).toFixed(5)} ${coinName} (${side})`
+            // Use Hyperliquid precision for position size
+            const formattedSize = formatHyperliquidSizeSync(Math.abs(size), coin)
+            return `${formattedSize} ${coinName} (${side})`
           }
         }
       }
       // Return coin name without -PERP suffix for consistency
       const coinName = coin.replace('-PERP', '')
-      return `0.00000 ${coinName}`
+      // Use Hyperliquid precision for zero position
+      const formattedSize = formatHyperliquidSizeSync(0, coin)
+      return `${formattedSize} ${coinName}`
     } catch (error) {
       console.error('Failed to get position for coin:', error)
       // Return coin name without -PERP suffix for consistency
       const coinName = coin.replace('-PERP', '')
-      return `0.00000 ${coinName}`
+      // Use Hyperliquid precision for zero position
+      const formattedSize = formatHyperliquidSizeSync(0, coin)
+      return `${formattedSize} ${coinName}`
     }
   }, [])
 
