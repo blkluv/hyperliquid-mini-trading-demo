@@ -7,10 +7,89 @@ export interface OrderRequest {
   sz: string | number
   limit_px?: string | number
   order_type: {
-    limit?: { tif: 'Gtc' | 'Ioc' | 'Alo' }
+    limit?: { 
+      tif: 'Gtc' | 'Ioc' | 'Alo'
+      tpsl?: {
+        tp?: {
+          triggerPx: string | number
+          isMarket: boolean
+        }
+        sl?: {
+          triggerPx: string | number
+          isMarket: boolean
+        }
+      }
+    }
+    trigger?: {
+      triggerPx: string | number
+      isMarket: boolean
+      tpsl: 'tp' | 'sl'
+    }
   }
   reduce_only: boolean
   cloid?: string
+}
+
+// Support for order arrays (TP/SL grouping)
+export type OrderRequestArray = OrderRequest[]
+
+export interface LeverageStatus {
+  address: string
+  positions: Array<{
+    coin: string
+    coinKey: string
+    leverage: number
+    leverageType: 'cross' | 'isolated'
+    positionSize: string
+    canSwitchMode: boolean
+    message: string
+  }>
+  summary: {
+    totalPositions: number
+    crossPositions: number
+    isolatedPositions: number
+    canSwitchMode: boolean
+    message: string
+  }
+}
+
+export interface TwapOrderRequest {
+  coin: string
+  is_buy: boolean
+  totalSize: number
+  intervals: number
+  durationMinutes: number
+  orderType?: 'market' | 'limit'
+  priceOffset?: number
+  reduceOnly?: boolean
+}
+
+export interface TwapTask {
+  id: string
+  coin: string
+  is_buy: boolean
+  totalSize: number
+  intervals: number
+  durationMinutes: number
+  orderType: string
+  priceOffset: number
+  reduceOnly: boolean
+  status: 'active' | 'completed' | 'failed' | 'cancelled'
+  createdAt: number
+  completedAt?: number
+  completedOrders: number
+  failedOrders: number
+  results: Array<{
+    orderIndex: number
+    result?: any
+    error?: string
+    executedAt: number
+    size: string
+  }>
+  subOrderSize: string
+  subOrderSizes?: string[]
+  sizePrecision?: number
+  minOrderSize?: number
 }
 
 export interface LeverageRequest {
@@ -32,7 +111,7 @@ class HyperliquidAPI {
     this.baseUrl = baseUrl
   }
 
-  async placeOrder(order: OrderRequest) {
+  async placeOrder(order: OrderRequest | OrderRequestArray) {
     const response = await fetch(`${this.baseUrl}/place-order`, {
       method: 'POST',
       headers: {
@@ -58,9 +137,73 @@ class HyperliquidAPI {
     })
     
     if (!response.ok) {
+      const errorData = await response.json()
+      throw new Error(errorData.error || `HTTP error! status: ${response.status}`)
+    }
+    
+    return response.json()
+  }
+
+  async getLeverageStatus(address: string): Promise<LeverageStatus> {
+    const response = await fetch(`${this.baseUrl}/leverage-status/${address}`)
+    
+    if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`)
     }
     
+    return response.json()
+  }
+
+  async placeTwapOrder(params: TwapOrderRequest): Promise<{ success: boolean; taskId: string; message: string; task: TwapTask }> {
+    const response = await fetch(`${this.baseUrl}/place-twap-order`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(params)
+    })
+
+    if (!response.ok) {
+      const errorData = await response.json()
+      throw new Error(errorData.error || `HTTP error! status: ${response.status}`)
+    }
+
+    return response.json()
+  }
+
+  async getTwapTask(taskId: string): Promise<{ task: TwapTask }> {
+    const response = await fetch(`${this.baseUrl}/twap-task/${taskId}`)
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+
+    return response.json()
+  }
+
+  async getTwapTasks(): Promise<{ tasks: TwapTask[]; totalTasks: number; activeTasks: number; completedTasks: number; failedTasks: number }> {
+    const response = await fetch(`${this.baseUrl}/twap-tasks`)
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+
+    return response.json()
+  }
+
+  async cancelTwapTask(taskId: string): Promise<{ success: boolean; message: string; taskId: string }> {
+    const response = await fetch(`${this.baseUrl}/cancel-twap-task/${taskId}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      }
+    })
+
+    if (!response.ok) {
+      const errorData = await response.json()
+      throw new Error(errorData.error || `HTTP error! status: ${response.status}`)
+    }
+
     return response.json()
   }
 

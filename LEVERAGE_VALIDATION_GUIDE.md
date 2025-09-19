@@ -260,3 +260,4 @@ Required Margin = Order Value / Leverage
 - Leverage limits are progressive (more restrictive for complex orders)
 - Asset-specific limits override order type limits when more restrictive
 - Short selling always has additional leverage restrictions
+

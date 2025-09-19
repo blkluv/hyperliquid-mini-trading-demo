@@ -167,3 +167,4 @@ console.log('🎣 Hook: Market order price calculation:', {
 - Console logging helps debug price calculations
 - All order types (market, limit, scale, TWAP) support current price parameter
 - Buffer can be adjusted if needed for different market conditions
+

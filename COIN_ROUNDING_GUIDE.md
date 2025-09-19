@@ -208,3 +208,4 @@ console.log('🎨 Component: Size conversion:', {
 - Display formatting matches the rounding precision
 - API calls use the same precision as the display
 - Rounding rules can be easily extended for new coins
+

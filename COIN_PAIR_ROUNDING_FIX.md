@@ -109,3 +109,4 @@ The fix now works for any coin pair format:
 - "BTC-PERP" → BTC rounding (5 decimals) → "0.00009 BTC-PERP"
 
 The system now correctly identifies the base coin from any coin pair and applies the appropriate rounding rules!
+

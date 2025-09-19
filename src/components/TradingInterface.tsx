@@ -19,13 +19,18 @@ const TradingInterface: React.FC = () => {
     switchNetwork,
     getNetworkStatus,
     getPositionForCoin,
-    formatPriceForTickSize
+    updatePositionForCoin,
+    formatPriceForTickSize,
+    // TWAP monitoring
+    activeTwapTasks,
+    twapTaskDetails,
+    twapNotifications,
+    requestNotificationPermission
   } = useTrading()
 
   const [currentNetwork, setCurrentNetwork] = useState<'testnet' | 'mainnet' | 'unknown'>('unknown')
   const [orderResponse, setOrderResponse] = useState<OrderResponse | null>(null)
   const [showOrderPopup, setShowOrderPopup] = useState(false)
-  const [currentPosition, setCurrentPosition] = useState<string>('0.00000 BTC')
   const [validationErrors, setValidationErrors] = useState<string[]>([])
   const [touchedFields, setTouchedFields] = useState<Set<string>>(new Set())
   const [showConfirmPopup, setShowConfirmPopup] = useState(false)
@@ -116,10 +121,9 @@ const TradingInterface: React.FC = () => {
       if (state.selectedCoin && isInitialized) {
         try {
           const position = await getPositionForCoin(state.selectedCoin)
-          setCurrentPosition(position)
+          console.log(`Position for ${state.selectedCoin}:`, position)
         } catch (error) {
           console.error('Failed to initialize position for selected coin:', error)
-          setCurrentPosition(`0.00000 ${state.selectedCoin}`)
         }
       }
     }
@@ -141,7 +145,13 @@ const TradingInterface: React.FC = () => {
 
   const selectedCoinKey = state.selectedCoin?.toUpperCase() || ''
   const topCardPrice = selectedCoinKey && priceMap && priceMap[selectedCoinKey] !== undefined
-    ? priceMap[selectedCoinKey]
+    ? (() => {
+        const priceData = priceMap[selectedCoinKey]
+        // Handle both old format (number) and new format (object with price property)
+        return typeof priceData === 'object' && priceData !== null && 'price' in priceData
+          ? parseFloat(priceData.price.toString())
+          : parseFloat(String(priceData))
+      })()
     : currentPrice
 
   // Auto-update limit price with current market price when available (only if not manually set)
@@ -211,9 +221,23 @@ const TradingInterface: React.FC = () => {
         errors.push('Order quantity must be a valid number')
       } else if (sizeValue <= 0) {
         errors.push('Order quantity must be greater than 0')
-      } else if (sizeValue < 0.001) {
-        errors.push('Minimum order size is 0.001')
       } else {
+        // Check minimum order size based on coin
+        const minCoinSizes: { [key: string]: number } = {
+          'DOGE-PERP': 1,
+          'BTC-PERP': 0.00001,
+          'ETH-PERP': 0.0001,
+          'SOL-PERP': 0.1,
+          'AVAX-PERP': 0.1
+        }
+        
+        const coinMinSize = minCoinSizes[state.selectedCoin] || 0.001
+        if (sizeValue < coinMinSize) {
+          errors.push(`Minimum order size is ${coinMinSize} ${state.selectedCoin?.replace('-PERP', '') || 'tokens'}`)
+        }
+      }
+      
+      if (errors.length === 0) {
         // 3. Check minimum order value (should be > 10 USD)
         const orderValue = state.sizeUnit === 'USD' 
           ? sizeValue  // For USD, order value is the size itself
@@ -247,13 +271,39 @@ const TradingInterface: React.FC = () => {
           if (orderValue > availableBalance) {
             errors.push(`Insufficient balance. Required: $${orderValue.toFixed(2)}, Available: $${availableBalance.toFixed(2)}`)
           }
+          
+          // Reduce-only validation for buy orders
+          if (state.reduceOnly) {
+            const positionMatch = accountInfo.currentPosition.match(/(\d+\.?\d*)\s+(\w+)/)
+            if (positionMatch) {
+              const availablePosition = parseFloat(positionMatch[1])
+              if (availablePosition >= 0) {
+                // Buy reduce-only order when position is positive or zero would increase position
+                errors.push('Reduce-only buy order would increase position. Use regular sell order to reduce position.')
+              }
+            } else {
+              // If we can't parse position, show error for reduce-only buy orders
+              errors.push('Cannot validate reduce-only buy order: Unable to parse current position. Please check your position and try again.')
+            }
+          }
         } else {
           // For sell orders, check position and margin requirements
           const availableBalance = parseFloat(accountInfo.availableToTrade || '0')
-          const positionMatch = currentPosition.match(/(\d+\.?\d*)\s+(\w+)/)
+          const positionMatch = accountInfo.currentPosition.match(/(\d+\.?\d*)\s+(\w+)/)
           
           if (positionMatch) {
             const availablePosition = parseFloat(positionMatch[1])
+            
+            // Reduce-only validation: Check if order would increase position
+            if (state.reduceOnly) {
+              if (availablePosition <= 0) {
+                // Sell reduce-only order when position is negative or zero would increase position
+                errors.push('Reduce-only sell order would increase position. Use regular buy order to reduce position.')
+              } else if (sizeValue > availablePosition) {
+                // Sell reduce-only order for more than available position would increase position
+                errors.push(`Reduce-only sell order would increase position. Maximum sell size: ${availablePosition.toFixed(6)} ${state.selectedCoin}`)
+              }
+            }
             
             if (sizeValue <= availablePosition) {
               // Regular sell - user has sufficient position
@@ -281,6 +331,11 @@ const TradingInterface: React.FC = () => {
             // If we can't parse position, assume it's a short sell and check margin
             const shortValue = sizeValue * currentPrice
             const requiredMargin = shortValue / state.leverage
+            
+            // Reduce-only validation for unparseable position
+            if (state.reduceOnly) {
+              errors.push('Cannot validate reduce-only order: Unable to parse current position. Please check your position and try again.')
+            }
             
             if (requiredMargin > availableBalance) {
               errors.push(`Insufficient margin for short sell. Required margin: $${requiredMargin.toFixed(2)}, Available: $${availableBalance.toFixed(2)}`)
@@ -394,6 +449,139 @@ const TradingInterface: React.FC = () => {
             }
           } else {
             errors.push('Number of intervals is required for TWAP orders')
+          }
+        }
+        
+        // TWAP sub-order value validation
+        if (touchedFields.has('size') && state.size && state.size.trim() !== '' && 
+            state.twapRunningTimeHours && state.twapRunningTimeMinutes) {
+          const hours = parseInt(state.twapRunningTimeHours)
+          const minutes = parseInt(state.twapRunningTimeMinutes)
+          const totalSize = parseFloat(state.size)
+          
+          if (!isNaN(hours) && !isNaN(minutes) && !isNaN(totalSize)) {
+            const totalRunningTimeMinutes = (hours * 60) + minutes
+            const totalRunningTimeSeconds = totalRunningTimeMinutes * 60
+            const numberOfOrders = Math.floor(totalRunningTimeSeconds / 30)
+            
+            if (numberOfOrders >= 2) {
+              // Calculate sub-order size and apply rounding
+              let subOrderSize: number
+              let subOrderUsdValue: number
+              
+              if (state.sizeUnit === 'USD') {
+                // For USD mode, calculate coin size from USD value
+                const subOrderUsdValueRaw = totalSize / numberOfOrders
+                subOrderSize = currentPrice ? subOrderUsdValueRaw / currentPrice : 0
+                subOrderUsdValue = subOrderUsdValueRaw
+              } else {
+                // For coin mode, calculate USD value using current price
+                subOrderSize = totalSize / numberOfOrders
+                subOrderUsdValue = subOrderSize * (currentPrice || 0)
+              }
+              
+              // Apply coin-specific rounding
+              const baseCoin = state.selectedCoin?.replace('-PERP', '') || 'COIN'
+              let roundedSubOrderSize: number
+              
+              switch (baseCoin) {
+                case 'DOGE':
+                  roundedSubOrderSize = Math.ceil(subOrderSize)
+                  break
+                case 'BTC':
+                  roundedSubOrderSize = Math.ceil(subOrderSize * 100000) / 100000
+                  break
+                case 'ETH':
+                  roundedSubOrderSize = Math.ceil(subOrderSize * 10000) / 10000
+                  break
+                case 'SOL':
+                  roundedSubOrderSize = Math.ceil(subOrderSize * 100) / 100
+                  break
+                default:
+                  roundedSubOrderSize = Math.ceil(subOrderSize * 1000000) / 1000000
+              }
+              
+              // Recalculate USD value with rounded size
+              const roundedSubOrderUsdValue = state.sizeUnit === 'USD' 
+                ? subOrderUsdValue  // USD mode: use original USD value
+                : roundedSubOrderSize * (currentPrice || 0)  // Coin mode: recalculate with rounded size
+              
+              if (roundedSubOrderUsdValue < 10) {
+                errors.push(`TWAP sub-order value too low: $${roundedSubOrderUsdValue.toFixed(2)} (minimum: $10.00)`)
+              }
+            }
+          }
+        }
+
+        const priceForValidation = typeof topCardPrice === 'number'
+          ? topCardPrice
+          : (typeof currentPrice === 'number' ? currentPrice : undefined)
+
+        const shouldValidateSubOrderValue =
+          (touchedFields.has('size') && state.size && state.size.trim() !== '') ||
+          touchedFields.has('twapRunningTime') ||
+          touchedFields.has('twapNumberOfIntervals')
+
+        if (shouldValidateSubOrderValue &&
+            state.twapRunningTimeHours &&
+            state.twapRunningTimeMinutes &&
+            state.size && state.size.trim() !== '') {
+          const hours = parseInt(state.twapRunningTimeHours)
+          const minutes = parseInt(state.twapRunningTimeMinutes)
+          const sizeValue = parseFloat(state.size.trim())
+
+          if (!isNaN(hours) && !isNaN(minutes) && !isNaN(sizeValue) && sizeValue > 0) {
+            const totalMinutes = (hours * 60) + minutes
+            if (totalMinutes > 0) {
+              const totalSeconds = totalMinutes * 60
+              const numberOfOrders = Math.floor(totalSeconds / 30)
+
+              if (numberOfOrders > 0) {
+                let totalUsdValue: number | null = null
+
+                if (state.sizeUnit === 'USD') {
+                  totalUsdValue = sizeValue
+                } else if (priceForValidation && priceForValidation > 0) {
+                  totalUsdValue = sizeValue * priceForValidation
+                }
+
+                if (totalUsdValue === null) {
+                  errors.push('Unable to validate TWAP sub-order value without market price data')
+                } else {
+                  const subOrderUsdValue = totalUsdValue / numberOfOrders
+                  if (subOrderUsdValue < 10) {
+                    errors.push(`Each TWAP sub-order must be at least $10. Current plan is $${subOrderUsdValue.toFixed(2)}.`)
+                  }
+
+                  const minCoinSizes: { [key: string]: number } = {
+                    'DOGE-PERP': 1,
+                    'BTC-PERP': 0.00001, // Updated from 0.0001
+                    'ETH-PERP': 0.0001,  // Updated from 0.001
+                    'SOL-PERP': 0.1,
+                    'AVAX-PERP': 0.1
+                  }
+
+                  const coinMinSize = minCoinSizes[state.selectedCoin] || 0
+                  if (coinMinSize > 0) {
+                    let subOrderCoinSize: number | null = null
+
+                    if (state.sizeUnit === 'USD') {
+                      if (priceForValidation && priceForValidation > 0) {
+                        const totalCoinSize = totalUsdValue / priceForValidation
+                        subOrderCoinSize = totalCoinSize / numberOfOrders
+                      }
+                    } else {
+                      subOrderCoinSize = sizeValue / numberOfOrders
+                    }
+
+                    if (subOrderCoinSize !== null && subOrderCoinSize < coinMinSize) {
+                      const coinLabel = state.selectedCoin?.replace('-PERP', '') || 'asset'
+                      errors.push(`Each TWAP sub-order must be at least ${coinMinSize} ${coinLabel}. Current plan is ${subOrderCoinSize.toFixed(4)} ${coinLabel}.`)
+                    }
+                  }
+                }
+              }
+            }
           }
         }
         break
@@ -554,7 +742,7 @@ const TradingInterface: React.FC = () => {
     }
 
     setValidationErrors(errors)
-  }, [state, currentPrice, accountInfo, touchedFields, currentPosition])
+  }, [state, currentPrice, accountInfo, touchedFields, topCardPrice])
   
   const handleSizeChange = (value: string) => {
     // Normalize input: trim spaces, allow only numbers and decimal point
@@ -664,14 +852,12 @@ const TradingInterface: React.FC = () => {
     markFieldAsTouched('selectedCoin')
     setState(prev => ({ ...prev, selectedCoin: coin }))
     
-    // Update position for the selected coin
+    // Update position for the selected coin immediately
     try {
-      const position = await getPositionForCoin(coin)
-      setCurrentPosition(position)
+      const position = await updatePositionForCoin(coin)
       console.log(`Position for ${coin}:`, position)
     } catch (error) {
       console.error('Failed to update position for selected coin:', error)
-      setCurrentPosition(`0.00000 ${coin}`)
     }
   }
 
@@ -704,6 +890,57 @@ const TradingInterface: React.FC = () => {
         })()
       : undefined
 
+    // Construct the actual order payload that will be sent to the server
+    const orderPayload = (() => {
+      const payload: any = {
+        coin: state.selectedCoin,
+        is_buy: state.side === 'buy',
+        sz: convertedSize || state.size,
+        reduce_only: state.reduceOnly,
+        order_type: (() => {
+          switch (state.orderType) {
+            case 'market':
+              return { limit: { tif: 'Ioc' } }
+            case 'limit':
+              const tifMap: { [key: string]: 'Gtc' | 'Ioc' | 'Alo' } = {
+                'GTC': 'Gtc',
+                'IOC': 'Ioc', 
+                'ALO': 'Alo'
+              }
+              return { limit: { tif: tifMap[state.timeInForce] || 'Gtc' } }
+            default:
+              return { limit: { tif: 'Ioc' } }
+          }
+        })()
+      }
+
+      // Add price for both limit and market orders
+      if (state.orderType === 'limit' && state.limitPrice) {
+        const limitPrice = parseFloat(state.limitPrice)
+        payload.limit_px = formatPriceForTickSize(limitPrice, state.selectedCoin)
+        console.log('🎯 Added limit_px for limit order:', payload.limit_px)
+      } else if (state.orderType === 'market' && topCardPrice) {
+        const buffer = state.side === 'buy' ? 1.01 : 0.99
+        const marketPrice = formatPriceForTickSize(topCardPrice * buffer, state.selectedCoin)
+        payload.limit_px = marketPrice
+        console.log('🎯 Added limit_px for market order:', payload.limit_px)
+      } else {
+        console.log('🎯 No limit_px added - orderType:', state.orderType, 'limitPrice:', state.limitPrice, 'topCardPrice:', topCardPrice)
+      }
+
+      // Note: TP/SL orders will be placed separately as trigger orders
+      // The main order payload doesn't include TP/SL parameters
+      console.log('🎯 Confirmation Popup - Main order payload (TP/SL will be separate trigger orders):', {
+        takeProfitStopLoss: state.takeProfitStopLoss,
+        takeProfitPrice: state.takeProfitPrice,
+        stopLossPrice: state.stopLossPrice
+      })
+
+      console.log('🎯 Final payload for confirmation popup:', payload)
+      console.log('🎯 Final payload JSON string:', JSON.stringify(payload, null, 2))
+      return payload
+    })()
+
     // Prepare order details for confirmation
     const orderDetails = {
       action: state.side === 'buy' ? 'Buy' : 'Sell',
@@ -729,8 +966,21 @@ const TradingInterface: React.FC = () => {
       orderType: state.orderType,
       selectedCoin: state.selectedCoin,
       side: state.side,
-      leverage: state.leverage
+      leverage: state.leverage,
+      takeProfitStopLoss: state.takeProfitStopLoss,
+      takeProfitPrice: state.takeProfitPrice,
+      stopLossPrice: state.stopLossPrice,
+      reduceOnly: state.reduceOnly,
+      payload: orderPayload
     }
+
+    console.log('🎯 Order Details for Confirmation Popup:', {
+      takeProfitStopLoss: orderDetails.takeProfitStopLoss,
+      takeProfitPrice: orderDetails.takeProfitPrice,
+      stopLossPrice: orderDetails.stopLossPrice,
+      takeProfitPriceTrimmed: orderDetails.takeProfitPrice?.trim(),
+      stopLossPriceTrimmed: orderDetails.stopLossPrice?.trim()
+    })
 
     setPendingOrder(orderDetails)
     setShowConfirmPopup(true)
@@ -782,15 +1032,14 @@ const TradingInterface: React.FC = () => {
           })
         }
       } else if (result?.type === 'twap') {
-        const successfulOrders = result.successfulOrders
         const totalOrders = result.totalOrders
         const totalDuration = result.totalDuration
         
         setOrderResponse({
           success: true,
-          orderId: `TWAP Order (${successfulOrders}/${totalOrders})`,
+          orderId: `TWAP Order Started`,
           status: 'TWAP Started',
-          message: `TWAP order started: ${successfulOrders}/${totalOrders} orders placed immediately. Remaining orders will execute over ${totalDuration} minutes.`,
+          message: `TWAP order started: ${totalOrders} orders will execute over ${totalDuration} minutes.`,
           data: result
         })
       } else {
@@ -931,6 +1180,120 @@ const TradingInterface: React.FC = () => {
       {!isInitialized && (
         <div className="mb-4 p-3 bg-yellow-900/20 border border-yellow-500 rounded text-yellow-400 text-sm">
           Initializing Hyperliquid SDK...
+        </div>
+      )}
+
+      {/* TWAP Task Status Section */}
+      {activeTwapTasks.size > 0 && Array.from(activeTwapTasks).some(taskId => {
+        const task = twapTaskDetails.get(taskId)
+        if (!task) return false
+        const totalProcessed = task.completedOrders + task.failedOrders
+        const progress = totalProcessed >= task.intervals ? 100 : (task.completedOrders / task.intervals) * 100
+        return progress < 100
+      }) && (
+        <div className="mb-4 p-4 bg-blue-900/20 border border-blue-600/50 rounded-lg">
+          <div className="flex justify-between items-center mb-3">
+            <div className="text-sm text-blue-300 font-medium">🔄 Active TWAP Orders</div>
+          </div>
+          
+          <div className="space-y-3">
+            {Array.from(activeTwapTasks).map(taskId => {
+              const task = twapTaskDetails.get(taskId)
+              if (!task) return null
+              
+              const totalProcessed = task.completedOrders + task.failedOrders
+              const progress = totalProcessed >= task.intervals ? 100 : (task.completedOrders / task.intervals) * 100
+              
+              // Hide task when progress reaches 100%
+              if (progress >= 100) return null
+              const plannedSubOrder = task.subOrderSizes && task.subOrderSizes.length > 0
+                ? task.subOrderSizes[0]
+                : (task.totalSize / task.intervals).toFixed(task.sizePrecision ?? 4)
+              const statusColor = task.status === 'completed' ? 'text-green-400' : 
+                                task.status === 'failed' ? 'text-red-400' : 'text-blue-400'
+              const statusIcon = task.status === 'completed' ? '✅' : 
+                               task.status === 'failed' ? '❌' : '🔄'
+              
+              return (
+                <div key={taskId} className="bg-gray-800/50 border border-gray-600 rounded-lg p-3">
+                  <div className="flex justify-between items-start mb-2">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-sm font-medium text-white">
+                        {statusIcon} Task {taskId.slice(-8)}
+                      </span>
+                      <span className={`text-xs px-2 py-1 rounded ${statusColor} bg-gray-700`}>
+                        {task.status.toUpperCase()}
+                      </span>
+                    </div>
+                    <div className="text-xs text-gray-400">
+                      {task.coin} • {task.is_buy ? 'BUY' : 'SELL'}
+                    </div>
+                  </div>
+                  
+                  {/* Progress Bar */}
+                  <div className="mb-2">
+                    <div className="flex justify-between text-xs text-gray-400 mb-1">
+                      <span>Progress</span>
+                      <span>{totalProcessed}/{task.intervals} orders</span>
+                    </div>
+                    <div className="w-full bg-gray-700 rounded-full h-2">
+                      <div 
+                        className={`h-2 rounded-full transition-all duration-300 ${
+                          totalProcessed >= task.intervals 
+                            ? (task.completedOrders > 0 ? 'bg-green-500' : 'bg-red-500')
+                            : 'bg-blue-500'
+                        }`}
+                        style={{ width: `${progress}%` }}
+                      />
+                    </div>
+                  </div>
+                  
+                  {/* Order Details */}
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="text-gray-400">
+                      <span className="text-gray-300">Size per Order:</span> {plannedSubOrder} {task.coin.replace('-PERP', '')}
+                    </div>
+                    <div className="text-gray-400">
+                      <span className="text-gray-300">Duration:</span> {task.durationMinutes}m
+                    </div>
+                    <div className="text-gray-400">
+                      <span className="text-gray-300">Completed:</span> {task.completedOrders}
+                    </div>
+                    <div className="text-gray-400">
+                      <span className="text-gray-300">Failed:</span> {task.failedOrders}
+                    </div>
+                  </div>
+                  
+                  {/* Recent Results */}
+                  {task.results && task.results.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-gray-600">
+                      <div className="text-xs text-gray-400 mb-1">Recent Orders:</div>
+                      <div className="space-y-1 max-h-20 overflow-y-auto">
+                        {task.results.slice(-3).map((result: any, index: number) => (
+                          <div key={index} className="flex justify-between text-xs">
+                            <span className="text-gray-300">Order {result.orderIndex}</span>
+                            <span className={result.error ? 'text-red-400' : 'text-green-400'}>
+                              {result.error ? '❌ Failed' : '✅ Success'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          
+          {/* Notification Toggle */}
+          <div className="mt-3 pt-3 border-t border-gray-600">
+            <button
+              onClick={requestNotificationPermission}
+              className="text-xs text-blue-400 hover:text-blue-300 underline"
+            >
+              {twapNotifications ? 'Notifications enabled' : 'Enable notifications for completion alerts'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -1164,7 +1527,7 @@ const TradingInterface: React.FC = () => {
         </div>
         <div className="flex justify-between text-sm">
           <span className="text-gray-400">Current Position:</span>
-          <span className="text-white">{currentPosition}</span>
+          <span className="text-white">{accountInfo.currentPosition}</span>
         </div>
       </div>
 
@@ -1442,106 +1805,171 @@ const TradingInterface: React.FC = () => {
               </label>
             </div>
 
-            {/* Additional Configuration */}
-            <div className="space-y-2">
-              <div className="text-sm text-gray-400">Order Configuration</div>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  placeholder="Number of Intervals"
-                  value={state.twapNumberOfIntervals}
-                  onChange={(e) => handleTwapNumericChange('twapNumberOfIntervals', e.target.value)}
-                  className="px-3 py-2 bg-dark-border border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-teal-primary"
-                />
-                <select
-                  value={state.twapOrderType}
-                  onChange={(e) => setState(prev => ({ ...prev, twapOrderType: e.target.value as 'market' | 'limit' }))}
-                  className="px-3 py-2 bg-dark-border border border-gray-600 rounded text-white focus:outline-none focus:border-teal-primary"
-                >
-                  <option value="market">Market Orders</option>
-                  <option value="limit">Limit Orders</option>
-                </select>
-              </div>
-              {state.twapOrderType === 'limit' && (
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  placeholder="Price Offset %"
-                  value={state.twapPriceOffset}
-                  onChange={(e) => handleTwapNumericChange('twapPriceOffset', e.target.value)}
-                  className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-teal-primary"
-                />
-              )}
-            </div>
             
-            {/* TWAP Order Preview */}
-            {state.twapRunningTimeHours && state.twapRunningTimeMinutes && state.twapNumberOfIntervals && state.size && (
-              <div className="mt-3 p-3 bg-gray-800/50 border border-gray-600 rounded">
-                <div className="text-xs text-gray-400 mb-2">TWAP Order Preview:</div>
-                <div className="space-y-1">
+            {/* TWAP Order Calculation Summary */}
+            {state.twapRunningTimeHours && state.twapRunningTimeMinutes && state.size && (
+              <div className="mt-4 p-4 bg-gray-800/50 border border-gray-600 rounded-lg">
+                <div className="text-sm text-gray-300 mb-3 font-medium">TWAP Order Summary</div>
+                <div className="space-y-2">
                   {(() => {
                     const runningTimeHours = parseInt(state.twapRunningTimeHours)
                     const runningTimeMinutes = parseInt(state.twapRunningTimeMinutes)
-                    const numberOfIntervals = parseInt(state.twapNumberOfIntervals)
                     const totalSize = parseFloat(state.size)
                     
-                    if (isNaN(runningTimeHours) || isNaN(runningTimeMinutes) || isNaN(numberOfIntervals) || isNaN(totalSize) || numberOfIntervals <= 0) {
-                      return <div className="text-xs text-gray-500">Invalid parameters</div>
+                    if (isNaN(runningTimeHours) || isNaN(runningTimeMinutes) || isNaN(totalSize)) {
+                      return <div className="text-sm text-gray-500">Please enter valid parameters</div>
                     }
                     
                     const totalRunningTimeMinutes = (runningTimeHours * 60) + runningTimeMinutes
-                    const subOrderSize = totalSize / numberOfIntervals
-                    const intervalDuration = totalRunningTimeMinutes / numberOfIntervals
-                    const startTime = new Date()
-                    const endTime = new Date(startTime.getTime() + totalRunningTimeMinutes * 60 * 1000)
+                    const totalRunningTimeSeconds = totalRunningTimeMinutes * 60
+                    
+                    // Calculate number of orders based on 30-second frequency
+                    const numberOfOrders = Math.floor(totalRunningTimeSeconds / 30)
+                    
+                    // Calculate sub-order size and USD value
+                    let subOrderSize: number
+                    let subOrderUsdValue: number
+                    let totalUsdValue: number
+                    
+                    if (state.sizeUnit === 'USD') {
+                      // For USD mode, totalSize is already in USD
+                      totalUsdValue = totalSize
+                      subOrderUsdValue = totalUsdValue / numberOfOrders
+                      // Convert USD value to coin size using current price
+                      subOrderSize = topCardPrice ? subOrderUsdValue / topCardPrice : 0
+                    } else {
+                      // For coin mode, calculate USD value using current price
+                      subOrderSize = totalSize / numberOfOrders
+                      totalUsdValue = topCardPrice ? totalSize * topCardPrice : 0
+                      subOrderUsdValue = totalUsdValue / numberOfOrders
+                    }
+                    
+                    // Format runtime display
+                    const formatRuntime = (minutes: number) => {
+                      if (minutes < 60) {
+                        return `${minutes} minute${minutes > 1 ? 's' : ''}`
+                      } else {
+                        const hours = Math.floor(minutes / 60)
+                        const remainingMinutes = minutes % 60
+                        if (remainingMinutes === 0) {
+                          return `${hours} hour${hours > 1 ? 's' : ''}`
+                        } else {
+                          return `${hours}h ${remainingMinutes}m`
+                        }
+                      }
+                    }
+                    
+                    // Apply coin-specific rounding for validation
+                    const baseCoin = state.selectedCoin?.replace('-PERP', '') || 'COIN'
+                    let roundedSubOrderSize: number
+                    
+                    switch (baseCoin) {
+                      case 'DOGE':
+                        roundedSubOrderSize = Math.ceil(subOrderSize)
+                        break
+                      case 'BTC':
+                        roundedSubOrderSize = Math.ceil(subOrderSize * 100000) / 100000
+                        break
+                      case 'ETH':
+                        roundedSubOrderSize = Math.ceil(subOrderSize * 10000) / 10000
+                        break
+                      case 'SOL':
+                        roundedSubOrderSize = Math.ceil(subOrderSize * 100) / 100
+                        break
+                      default:
+                        roundedSubOrderSize = Math.ceil(subOrderSize * 1000000) / 1000000
+                    }
+                    
+                    // Recalculate USD value with rounded size
+                    const roundedSubOrderUsdValue = state.sizeUnit === 'USD' 
+                      ? subOrderUsdValue  // USD mode: use original USD value
+                      : roundedSubOrderSize * (topCardPrice || 0)  // Coin mode: recalculate with rounded size
+                    
+                    // Validation warnings
+                    const validationWarnings = []
+                    if (roundedSubOrderUsdValue < 10) {
+                      validationWarnings.push(`⚠️ Sub-order value too low: $${roundedSubOrderUsdValue.toFixed(2)} (minimum: $10.00)`)
+                    }
+                    if (numberOfOrders < 2) {
+                      validationWarnings.push(`⚠️ Runtime too short: minimum 1 minute required`)
+                    }
                     
                     return (
                       <>
-                        <div className="flex justify-between text-xs">
-                          <span className="text-gray-300">Sub-order Size:</span>
-                          <span className="text-white">{subOrderSize.toFixed(4)}</span>
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-gray-400 text-sm">Frequency:</span>
+                          <span className="text-white text-sm font-medium">30 seconds</span>
                         </div>
-                        <div className="flex justify-between text-xs">
-                          <span className="text-gray-300">Total Duration:</span>
-                          <span className="text-white">{totalRunningTimeMinutes} minutes</span>
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-gray-400 text-sm">Runtime:</span>
+                          <span className="text-white text-sm font-medium">{formatRuntime(totalRunningTimeMinutes)}</span>
                         </div>
-                        <div className="flex justify-between text-xs">
-                          <span className="text-gray-300">Interval Duration:</span>
-                          <span className="text-white">{intervalDuration.toFixed(1)} minutes</span>
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-gray-400 text-sm">Number of Orders:</span>
+                          <span className="text-white text-sm font-medium">{numberOfOrders}</span>
                         </div>
-                        <div className="flex justify-between text-xs">
-                          <span className="text-gray-300">Start Time:</span>
-                          <span className="text-white">{startTime.toLocaleTimeString()}</span>
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-gray-400 text-sm">Size per Suborder:</span>
+                          <span className="text-white text-sm font-medium">
+                            {(() => {
+                              // Use the already calculated rounded size
+                              const baseCoin = state.selectedCoin?.replace('-PERP', '') || 'COIN'
+                              
+                              // Format with appropriate decimal places
+                              let decimalPlaces = 6
+                              switch (baseCoin) {
+                                case 'DOGE':
+                                  decimalPlaces = 0
+                                  break
+                                case 'BTC':
+                                  decimalPlaces = 5
+                                  break
+                                case 'ETH':
+                                  decimalPlaces = 4
+                                  break
+                                case 'SOL':
+                                  decimalPlaces = 2
+                                  break
+                              }
+                              
+                              return `${roundedSubOrderSize.toFixed(decimalPlaces)} ${baseCoin}`
+                            })()}
+                          </span>
                         </div>
-                        <div className="flex justify-between text-xs">
-                          <span className="text-gray-300">End Time:</span>
-                          <span className="text-white">{endTime.toLocaleTimeString()}</span>
-                        </div>
-                        <div className="flex justify-between text-xs">
-                          <span className="text-gray-300">Order Type:</span>
-                          <span className="text-white capitalize">{state.twapOrderType}</span>
-                        </div>
-                        {state.twapOrderType === 'limit' && (
-                          <div className="flex justify-between text-xs">
-                            <span className="text-gray-300">Price Offset:</span>
-                            <span className="text-white">{state.twapPriceOffset}%</span>
-                          </div>
-                        )}
                         {state.twapRandomize && (
-                          <div className="flex justify-between text-xs">
-                            <span className="text-gray-300">Randomization:</span>
-                            <span className="text-white">Enabled</span>
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-gray-400 text-sm">Randomization:</span>
+                            <span className="text-white text-sm font-medium">Enabled</span>
                           </div>
                         )}
+                        
+                        {/* Validation Warnings */}
+                        {validationWarnings.length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-red-500/30">
+                            <div className="text-red-400 text-sm font-medium mb-2">⚠️ Validation Issues:</div>
+                            {validationWarnings.map((warning, index) => (
+                              <div key={index} className="text-red-300 text-xs mb-1">{warning}</div>
+                            ))}
+                          </div>
+                        )}
+                        
+                        {/* Order Requirements Info */}
+                        <div className="mt-3 pt-3 border-t border-blue-500/30">
+                          <div className="text-blue-400 text-sm font-medium mb-2">📋 Order Requirements:</div>
+         <div className="text-blue-300 text-xs space-y-1">
+           <div>• Each sub-order must be ≥ $10 USD value</div>
+           <div>• BTC minimum size: 0.00001 BTC</div>
+           <div>• ETH minimum size: 0.0001 ETH</div>
+           <div>• DOGE minimum size: 1 DOGE</div>
+         </div>
+                        </div>
                       </>
                     )
                   })()}
                 </div>
               </div>
             )}
+            
           </div>
         ) : (
           <div className="mb-2">
@@ -1835,6 +2263,57 @@ const TradingInterface: React.FC = () => {
                 <span className="text-gray-400">Est. Liquidation Price:</span>
                 <span className="text-white font-medium">{pendingOrder.liquidationPrice}</span>
               </div>
+              
+              {/* Reduce Only Information */}
+              {pendingOrder.reduceOnly && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Reduce Only:</span>
+                  <span className="text-yellow-400 font-medium">Enabled</span>
+                </div>
+              )}
+              
+              {/* Take Profit / Stop Loss Information */}
+              {pendingOrder.takeProfitStopLoss && (
+                <>
+                  {pendingOrder.takeProfitPrice && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Take Profit:</span>
+                      <span className="text-green-400 font-medium">${pendingOrder.takeProfitPrice}</span>
+                    </div>
+                  )}
+                  {pendingOrder.stopLossPrice && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Stop Loss:</span>
+                      <span className="text-red-400 font-medium">${pendingOrder.stopLossPrice}</span>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            
+            {/* TP/SL Trigger Orders Info */}
+            {pendingOrder.takeProfitStopLoss && (pendingOrder.takeProfitPrice || pendingOrder.stopLossPrice) && (
+              <div className="mt-4 p-3 bg-blue-900/20 border border-blue-600 rounded">
+                <div className="text-sm text-blue-400 mb-2">📋 Additional Trigger Orders:</div>
+                <div className="text-xs text-gray-300 space-y-1">
+                  <div>• TP/SL orders will be placed as separate trigger orders after the main order</div>
+                  <div>• Each trigger order will be reduce-only and opposite side of main order</div>
+                  {pendingOrder.takeProfitPrice && (
+                    <div>• Take Profit: ${pendingOrder.takeProfitPrice} (limit order)</div>
+                  )}
+                  {pendingOrder.stopLossPrice && (
+                    <div>• Stop Loss: ${pendingOrder.stopLossPrice} (market order)</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Order Payload */}
+            <div className="mt-4 p-3 bg-gray-800/50 border border-gray-600 rounded">
+              <div className="text-sm text-gray-400 mb-2">Main Order Payload:</div>
+              <pre className="text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap">
+                {JSON.stringify(pendingOrder.payload, null, 2)}
+              </pre>
             </div>
             
             <div className="flex gap-3">

@@ -174,3 +174,4 @@ The system now validates short selling scenarios comprehensively, checking:
 - Margin calculation: `(Short Value) / Leverage`
 - Short value calculation: `(Sell Size - Available Position) × Current Price`
 - All validations only show when the size field has been touched
+

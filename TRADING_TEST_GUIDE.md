@@ -166,3 +166,4 @@ This guide helps you test the 4 different order types and understand what parame
 - **Stop Loss**: Automatically sell when price goes down
 
 Remember: Always test with small amounts first!
+

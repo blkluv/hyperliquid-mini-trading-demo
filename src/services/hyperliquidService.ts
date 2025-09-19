@@ -1,5 +1,5 @@
 // Use API approach for better security and compatibility
-import { hyperliquidAPI, OrderRequest } from '../api/hyperliquidApi'
+import { hyperliquidAPI, OrderRequest, LeverageStatus, TwapOrderRequest, TwapTask } from '../api/hyperliquidApi'
 
 export interface OrderParams {
   coin: string
@@ -7,7 +7,24 @@ export interface OrderParams {
   sz: string | number
   limit_px?: string | number
   order_type: {
-    limit?: { tif: 'Gtc' | 'Ioc' | 'Alo' }
+    limit?: { 
+      tif: 'Gtc' | 'Ioc' | 'Alo'
+      tpsl?: {
+        tp?: {
+          triggerPx: string | number
+          isMarket: boolean
+        }
+        sl?: {
+          triggerPx: string | number
+          isMarket: boolean
+        }
+      }
+    }
+    trigger?: {
+      triggerPx: string | number
+      isMarket: boolean
+      tpsl: 'tp' | 'sl'
+    }
   }
   reduce_only: boolean
   cloid?: string
@@ -28,7 +45,7 @@ export interface MarginParams {
 class HyperliquidService {
   private isInitialized = false
 
-  async initialize(privateKey: string, testnet = false) {
+  async initialize(_privateKey: string, _testnet = false) {
     try {
       // Check if server is running
       const response = await fetch('http://localhost:3001/api/health')
@@ -44,25 +61,42 @@ class HyperliquidService {
     }
   }
 
-  async placeOrder(orderParams: OrderParams) {
+  async placeOrder(orderParams: OrderParams | OrderParams[]) {
     if (!this.isInitialized) {
       throw new Error('Service not initialized')
     }
 
     try {
-      // Convert OrderParams to OrderRequest format
-      const orderRequest: OrderRequest = {
-        coin: orderParams.coin,
-        is_buy: orderParams.is_buy,
-        sz: orderParams.sz,
-        limit_px: orderParams.limit_px,
-        order_type: orderParams.order_type,
-        reduce_only: orderParams.reduce_only,
-        cloid: orderParams.cloid
+      // Handle both single order and order array
+      if (Array.isArray(orderParams)) {
+        // Convert array of OrderParams to array of OrderRequest
+        const orderRequests: OrderRequest[] = orderParams.map(params => ({
+          coin: params.coin,
+          is_buy: params.is_buy,
+          sz: params.sz,
+          limit_px: params.limit_px,
+          order_type: params.order_type,
+          reduce_only: params.reduce_only,
+          cloid: params.cloid
+        }))
+        
+        const result = await hyperliquidAPI.placeOrder(orderRequests)
+        return result
+      } else {
+        // Convert single OrderParams to OrderRequest format
+        const orderRequest: OrderRequest = {
+          coin: orderParams.coin,
+          is_buy: orderParams.is_buy,
+          sz: orderParams.sz,
+          limit_px: orderParams.limit_px,
+          order_type: orderParams.order_type,
+          reduce_only: orderParams.reduce_only,
+          cloid: orderParams.cloid
+        }
+        
+        const result = await hyperliquidAPI.placeOrder(orderRequest)
+        return result
       }
-      
-      const result = await hyperliquidAPI.placeOrder(orderRequest)
-      return result
     } catch (error) {
       console.error('Failed to place order:', error)
       throw error
@@ -73,12 +107,26 @@ class HyperliquidService {
     if (!this.isInitialized) {
       throw new Error('Service not initialized')
     }
-
+    
     try {
       const result = await hyperliquidAPI.updateLeverage(params)
       return result
     } catch (error) {
       console.error('Failed to update leverage:', error)
+      throw error
+    }
+  }
+
+  async getLeverageStatus(address: string): Promise<LeverageStatus> {
+    if (!this.isInitialized) {
+      throw new Error('Service not initialized')
+    }
+    
+    try {
+      const result = await hyperliquidAPI.getLeverageStatus(address)
+      return result
+    } catch (error) {
+      console.error('Failed to get leverage status:', error)
       throw error
     }
   }
@@ -177,6 +225,63 @@ class HyperliquidService {
       return result
     } catch (error) {
       console.error('Failed to get health status:', error)
+      throw error
+    }
+  }
+
+  // TWAP order methods
+  async placeTwapOrder(params: TwapOrderRequest): Promise<{ success: boolean; taskId: string; message: string; task: TwapTask }> {
+    if (!this.isInitialized) {
+      throw new Error('Service not initialized')
+    }
+
+    try {
+      const result = await hyperliquidAPI.placeTwapOrder(params)
+      return result
+    } catch (error) {
+      console.error('Failed to place TWAP order:', error)
+      throw error
+    }
+  }
+
+  async getTwapTask(taskId: string): Promise<{ task: TwapTask }> {
+    if (!this.isInitialized) {
+      throw new Error('Service not initialized')
+    }
+
+    try {
+      const result = await hyperliquidAPI.getTwapTask(taskId)
+      return result
+    } catch (error) {
+      console.error('Failed to get TWAP task:', error)
+      throw error
+    }
+  }
+
+  async getTwapTasks(): Promise<{ tasks: TwapTask[]; totalTasks: number; activeTasks: number; completedTasks: number; failedTasks: number }> {
+    if (!this.isInitialized) {
+      throw new Error('Service not initialized')
+    }
+
+    try {
+      const result = await hyperliquidAPI.getTwapTasks()
+      return result
+    } catch (error) {
+      console.error('Failed to get TWAP tasks:', error)
+      throw error
+    }
+  }
+
+  async cancelTwapTask(taskId: string): Promise<{ success: boolean; message: string; taskId: string }> {
+    if (!this.isInitialized) {
+      throw new Error('Service not initialized')
+    }
+
+    try {
+      const result = await hyperliquidAPI.cancelTwapTask(taskId)
+      return result
+    } catch (error) {
+      console.error('Failed to cancel TWAP task:', error)
       throw error
     }
   }

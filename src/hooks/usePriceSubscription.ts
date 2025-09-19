@@ -38,7 +38,11 @@ const normalizeCoin = (symbol: string) => {
   return upper.includes('-') ? upper : `${upper}-PERP`
 }
 
-type PriceMap = Record<string, number>
+type PriceData = {
+  price: string | number
+  timestamp: number
+}
+type PriceMap = Record<string, PriceData>
 
 export const usePriceSubscription = (coin: string, isTestnet: boolean = true) => {
   const [price, setPrice] = useState<number | null>(null)
@@ -108,7 +112,12 @@ export const usePriceSubscription = (coin: string, isTestnet: boolean = true) =>
             setPrices(data.prices)
             const normalizedCoin = normalizeCoin(coinRef.current)
             if (normalizedCoin && data.prices[normalizedCoin] !== undefined) {
-              setPrice(data.prices[normalizedCoin])
+              const priceData = data.prices[normalizedCoin]
+              // Handle both old format (number) and new format (object with price property)
+              const priceValue = typeof priceData === 'object' && priceData !== null && 'price' in priceData
+                ? parseFloat(priceData.price.toString())
+                : parseFloat(priceData.toString())
+              setPrice(priceValue)
             }
             setResolvedBase(base)
             setError(null)
@@ -172,7 +181,12 @@ export const usePriceSubscription = (coin: string, isTestnet: boolean = true) =>
           setPrices(payload.prices)
           const normalizedCoin = normalizeCoin(coinRef.current)
           if (normalizedCoin && payload.prices[normalizedCoin] !== undefined) {
-            setPrice(payload.prices[normalizedCoin])
+            const priceData = payload.prices[normalizedCoin]
+            // Handle both old format (number) and new format (object with price property)
+            const priceValue = typeof priceData === 'object' && priceData !== null && 'price' in priceData
+              ? parseFloat(priceData.price.toString())
+              : parseFloat(priceData.toString())
+            setPrice(priceValue)
             setError(null)
           }
         }
@@ -191,7 +205,12 @@ export const usePriceSubscription = (coin: string, isTestnet: boolean = true) =>
   useEffect(() => {
     const normalizedCoin = normalizeCoin(coin)
     if (normalizedCoin && prices[normalizedCoin] !== undefined) {
-      setPrice(prices[normalizedCoin])
+      const priceData = prices[normalizedCoin]
+      // Handle both old format (number) and new format (object with price property)
+      const priceValue = typeof priceData === 'object' && priceData !== null && 'price' in priceData
+        ? parseFloat(priceData.price.toString())
+        : parseFloat(priceData.toString())
+      setPrice(priceValue)
     }
   }, [coin, prices])
 

@@ -6,14 +6,19 @@
   "scripts": {
     "dev": "vite",
     "dev:server": "node server.js",
+    "dev:server-new": "node server-new.js",
     "dev:full": "concurrently \"npm run dev:server\" \"npm run dev\"",
+    "dev:full-new": "concurrently \"npm run dev:server-new\" \"npm run dev\"",
     "build": "tsc && vite build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:api": "node test.js"
   },
   "dependencies": {
+    "@nktkas/hyperliquid": "^0.22.1",
     "hyperliquid": "^1.7.7",
     "lucide-react": "^0.263.1",
+    "node-fetch": "^3.3.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "ws": "^8.18.3"

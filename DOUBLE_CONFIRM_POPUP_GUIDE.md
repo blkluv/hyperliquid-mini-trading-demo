@@ -199,3 +199,4 @@ const orderDetails = {
 - Users can cancel at any time without penalty
 - Confirmation popup is modal and blocks other interactions
 - Order execution only happens after explicit confirmation
+

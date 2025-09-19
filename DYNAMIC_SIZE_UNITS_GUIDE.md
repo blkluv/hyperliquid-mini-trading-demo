@@ -233,3 +233,4 @@ useEffect(() => {
 - Non-USD size units automatically update when coin changes
 - All calculations (Order Value, Margin, Fees) work with both units
 - Input validation ensures only valid numeric values are accepted
+

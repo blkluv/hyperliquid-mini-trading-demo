@@ -206,3 +206,4 @@ switch (orderType) {
 - Scale and TWAP orders always use GTC for order persistence
 - TIF selection is stored in component state and persists across order type changes
 - The TIF field is marked as touched when changed for potential validation
+

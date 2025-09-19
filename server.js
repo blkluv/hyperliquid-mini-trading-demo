@@ -292,6 +292,16 @@ app.post('/api/place-order', async (req, res) => {
     const order = req.body
     console.log('📝 Placing order:', JSON.stringify(order, null, 2))
     
+    // Check if this is a grouped TP/SL order
+    if (order.action && order.action.grouping === 'normalTpsl') {
+      console.log('🎯 Processing grouped TP/SL order')
+      const result = await sdk.exchange.placeOrder(order)
+      console.log('✅ Grouped TP/SL result:', JSON.stringify(result, null, 2))
+      res.json(result)
+      return
+    }
+    
+    // Handle single orders (existing logic)
     // Get current market price for better order executionmm0
     try {
       const meta = await sdk.info.perpetuals.getMeta()

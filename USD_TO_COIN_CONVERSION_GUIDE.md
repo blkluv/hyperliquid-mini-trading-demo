@@ -196,3 +196,4 @@ console.log('🎨 Component: Size conversion:', {
 - API always receives coin sizes, never USD amounts
 - Conversion precision is 6 decimal places
 - Console logging helps debug conversion issues
+

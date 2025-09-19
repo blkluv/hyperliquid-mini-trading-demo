@@ -104,3 +104,4 @@ size: state.sizeUnit === 'USD'
 - Coin amounts are shown directly without conversion
 - All sizes use proper decimal formatting based on coin type
 - Matches the size sent to the API for execution
+

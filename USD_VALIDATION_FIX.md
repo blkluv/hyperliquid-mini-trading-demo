@@ -47,3 +47,4 @@ Test with:
 - Size: "15", Size Unit: "USD" → Should pass validation
 - Size: "5", Size Unit: "USD" → Should fail with minimum order value error
 - Size: "0.001", Size Unit: "BTC" → Should pass (if BTC price > $10,000)
+

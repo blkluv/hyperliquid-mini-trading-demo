@@ -204,3 +204,4 @@ const decimalPlaces = tickSize < 1 ? Math.abs(Math.log10(tickSize)) : 0
 - Handles both individual coins and coin pairs
 - All order types now use consistent price formatting
 - UI provides real-time feedback for price formatting
+
