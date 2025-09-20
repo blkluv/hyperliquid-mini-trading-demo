@@ -8,6 +8,7 @@ import { CONFIG } from '../config/config'
 import { TradingConfigHelper } from '../config/tradingConfig'
 import { hyperliquidService } from '../services/hyperliquidService'
 import { validateHyperliquidPrice, validateHyperliquidSizeSync, formatHyperliquidPriceSync, formatHyperliquidSizeSync, getHyperliquidSizeValidationError } from '../utils/hyperliquidPrecision'
+import { leverageService, LeverageInfo } from '../services/leverageService'
 
 const TradingInterface: React.FC = () => {
   const {
@@ -39,6 +40,17 @@ const TradingInterface: React.FC = () => {
   const [touchedFields, setTouchedFields] = useState<Set<string>>(new Set())
   const [showConfirmPopup, setShowConfirmPopup] = useState(false)
   const [pendingOrder, setPendingOrder] = useState<any>(null)
+  
+  // Dynamic leverage state
+  const [leverageInfo, setLeverageInfo] = useState<LeverageInfo | null>(null)
+  const [maxLeverage, setMaxLeverage] = useState<number>(50) // Default fallback
+  const [availableLeverage, setAvailableLeverage] = useState<number>(50)
+  
+  // Leverage update delay state
+  const [leverageUpdateTimeout, setLeverageUpdateTimeout] = useState<NodeJS.Timeout | null>(null)
+  
+  // Coin dropdown state
+  const [isCoinDropdownOpen, setIsCoinDropdownOpen] = useState<boolean>(false)
 
   // Add custom styles for the leverage slider
   React.useEffect(() => {
@@ -137,6 +149,25 @@ const TradingInterface: React.FC = () => {
       
       .margin-mode-dropdown:active {
         transform: scale(0.98);
+      }
+      
+      /* Custom scrollbar for coin dropdown */
+      .coin-dropdown-scroll::-webkit-scrollbar {
+        width: 6px;
+      }
+      
+      .coin-dropdown-scroll::-webkit-scrollbar-track {
+        background: #374151;
+        border-radius: 3px;
+      }
+      
+      .coin-dropdown-scroll::-webkit-scrollbar-thumb {
+        background: #6b7280;
+        border-radius: 3px;
+      }
+      
+      .coin-dropdown-scroll::-webkit-scrollbar-thumb:hover {
+        background: #9ca3af;
       }
     `
     document.head.appendChild(style)
@@ -370,6 +401,60 @@ const TradingInterface: React.FC = () => {
       setState(prev => ({ ...prev, sizeUnit: state.selectedCoin }))
     }
   }, [state.selectedCoin])
+
+  // Fetch dynamic leverage information when coin changes
+  useEffect(() => {
+    const fetchLeverageInfo = async () => {
+      if (state.selectedCoin && isInitialized) {
+        try {
+          const coinName = state.selectedCoin.replace('-PERP', '')
+          const leverageData = await leverageService.getLeverageInfo(coinName)
+          
+          setLeverageInfo(leverageData)
+          setMaxLeverage(leverageData.maxLeverage)
+          
+          // Calculate available leverage based on current position size
+          if (state.size && state.size.trim() !== '') {
+            const sizeValue = parseFloat(state.size.trim())
+            if (!isNaN(sizeValue) && sizeValue > 0) {
+              const available = await leverageService.getAvailableLeverage(coinName, sizeValue)
+              setAvailableLeverage(available)
+            } else {
+              setAvailableLeverage(leverageData.maxLeverage)
+            }
+          } else {
+            setAvailableLeverage(leverageData.maxLeverage)
+          }
+          
+          console.log(`📊 Dynamic leverage info for ${coinName}:`, {
+            maxLeverage: leverageData.maxLeverage,
+            availableLeverage: availableLeverage,
+            marginTable: leverageData.marginTable
+          })
+        } catch (error) {
+          console.error('Failed to fetch leverage info:', error)
+          // Keep default values
+        }
+      }
+    }
+
+    fetchLeverageInfo()
+  }, [state.selectedCoin, state.size, isInitialized])
+
+  // Close coin dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement
+      if (isCoinDropdownOpen && !target.closest('.coin-dropdown-container')) {
+        setIsCoinDropdownOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [isCoinDropdownOpen])
 
   // Auto-calculate TP/SL prices when enabled
   useEffect(() => {
@@ -948,17 +1033,25 @@ const TradingInterface: React.FC = () => {
           }
         }
         
-        // Asset-specific leverage validations
-        const assetLeverageLimits: { [key: string]: number } = {
-          'BTC': 50,   // Bitcoin: Standard limits
-          'ETH': 40,   // Ethereum: Slightly lower
-          'SOL': 30,   // Solana: More volatile
-          'default': 50
-        }
-        
-        const maxLeverageForAsset = assetLeverageLimits[state.selectedCoin] || assetLeverageLimits.default
-        if (state.leverage > maxLeverageForAsset) {
-          errors.push(`Maximum leverage for ${state.selectedCoin} is ${maxLeverageForAsset}x`)
+        // Dynamic asset-specific leverage validations
+        if (leverageInfo) {
+          const maxLeverageForAsset = Math.min(maxLeverage, availableLeverage)
+          if (state.leverage > maxLeverageForAsset) {
+            errors.push(`Maximum leverage for ${state.selectedCoin} is ${maxLeverageForAsset}x (based on position size and asset limits)`)
+          }
+        } else {
+          // Fallback to hardcoded limits if dynamic data unavailable
+          const assetLeverageLimits: { [key: string]: number } = {
+            'BTC': 50,   // Bitcoin: Standard limits
+            'ETH': 40,   // Ethereum: Slightly lower
+            'SOL': 30,   // Solana: More volatile
+            'default': 50
+          }
+          
+          const maxLeverageForAsset = assetLeverageLimits[state.selectedCoin] || assetLeverageLimits.default
+          if (state.leverage > maxLeverageForAsset) {
+            errors.push(`Maximum leverage for ${state.selectedCoin} is ${maxLeverageForAsset}x`)
+          }
         }
         
         // Minimum margin requirements based on leverage
@@ -1429,22 +1522,48 @@ const TradingInterface: React.FC = () => {
   }
 
   const handleLeverageChange = async (leverage: number) => {
-    try {
-      await updateLeverage(leverage)
-      toast.success(`Leverage updated to ${leverage}x`)
-    } catch (err) {
-      console.error('Failed to update leverage:', err)
-      if (err instanceof Error) {
-        if (err.message.includes('Cannot switch leverage type with open position')) {
-          toast.error('Cannot change leverage while you have open positions. Please close all positions first.')
+    // Clear existing timeout if user is still adjusting
+    if (leverageUpdateTimeout) {
+      clearTimeout(leverageUpdateTimeout)
+    }
+    
+    // Update local state immediately for UI responsiveness
+    setState(prev => ({ ...prev, leverage }))
+    
+    // Set up delayed API call
+    const timeout = setTimeout(async () => {
+      try {
+        await updateLeverage(leverage)
+        toast.success(`Leverage updated to ${leverage}x`)
+      } catch (err) {
+        console.error('Failed to update leverage:', err)
+        
+        // Revert to previous leverage on error
+        setState(prev => ({ ...prev, leverage: prev.leverage }))
+        
+        if (err instanceof Error) {
+          if (err.message.includes('Cannot switch leverage type with open position')) {
+            toast.error('Cannot change leverage while you have open positions. Please close all positions first.')
+          } else {
+            toast.error(`Failed to update leverage: ${err.message}`)
+          }
         } else {
-          toast.error(`Failed to update leverage: ${err.message}`)
+          toast.error('Failed to update leverage')
         }
-      } else {
-        toast.error('Failed to update leverage')
+      }
+    }, 2000) // 2 second delay
+    
+    setLeverageUpdateTimeout(timeout)
+  }
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (leverageUpdateTimeout) {
+        clearTimeout(leverageUpdateTimeout)
       }
     }
-  }
+  }, [leverageUpdateTimeout])
 
   const handleMarginModeChange = async (marginMode: 'isolated' | 'cross') => {
     try {
@@ -1679,28 +1798,26 @@ const TradingInterface: React.FC = () => {
       </div>
 
       {/* Coin Selection and Price Display */}
-      <div className="mb-4">
+      <div className="mb-1">
         <div className="relative">
-          <select
-            value={state.selectedCoin}
-            onChange={(e) => handleCoinChange(e.target.value)}
-            disabled={isLoading}
-            className="w-full p-4 bg-gray-800 rounded-lg border border-gray-600 focus:border-teal-primary focus:outline-none appearance-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          {/* Clickable header to toggle dropdown */}
+          <div 
+            className="w-full p-4 bg-gray-800 rounded-lg border border-gray-600 hover:border-teal-primary focus:outline-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-between"
+            onClick={() => !isLoading && setIsCoinDropdownOpen(!isCoinDropdownOpen)}
           >
-            {CONFIG.AVAILABLE_COINS.map((coin: { symbol: string; name: string; icon: string }) => (
-              <option key={coin.symbol} value={coin.symbol}>
-                 {coin.name} ({coin.symbol})
-              </option>
-            ))}
-          </select>
-          
-          {/* Custom display overlay */}
-          <div className="absolute inset-0 flex items-center justify-between px-4 pointer-events-none">
-            {/* Left side - Coin name */}
+            {/* Left side - Selected coin info */}
             <div className="flex items-center gap-3">
+              <span className="text-white font-medium">
+                {state.selectedCoin || 'Select Coin'}
+              </span>
+              {leverageInfo && (
+                <span className="px-2 py-1 bg-green-600 text-white text-xs rounded-full">
+                  {maxLeverage}x
+                </span>
+              )}
             </div>
             
-            {/* Right side - Price */}
+            {/* Right side - Price and chevron */}
             <div className="flex items-center gap-2">
               <span className="text-sm text-gray-400">Price:</span>
               <span className="text-lg font-semibold text-white">
@@ -1722,11 +1839,99 @@ const TradingInterface: React.FC = () => {
                   <span className="text-gray-400">Connecting...</span>
                 )}
               </span>
-              <ChevronDown size={20} className="text-gray-400" />
+              <ChevronDown 
+                size={20} 
+                className={`text-gray-400 transition-transform ${isCoinDropdownOpen ? 'rotate-180' : ''}`} 
+              />
             </div>
           </div>
         </div>
       </div>
+
+      {/* Enhanced Coin Selection Table - Floating dropdown */}
+      {isCoinDropdownOpen && (
+        <>
+          {/* Background overlay */}
+          <div 
+            className="fixed inset-0 z-40 bg-black/20" 
+            onClick={() => setIsCoinDropdownOpen(false)}
+          />
+          
+          {/* Floating dropdown */}
+          <div className="relative mb-4 coin-dropdown-container">
+            <div className="absolute left-0 right-0 z-50 bg-gray-800 rounded-lg border border-gray-600 overflow-hidden shadow-2xl transform transition-all duration-200 ease-out">
+            {/* Table Header */}
+            <div className="grid grid-cols-2 gap-4 px-4 py-3 bg-gray-700 border-b border-gray-600">
+              <div className="text-sm font-medium text-gray-300">Symbol</div>
+              <div className="text-sm font-medium text-gray-300 text-right">Last Price</div>
+            </div>
+            
+            {/* Table Rows - Scrollable container */}
+            <div className="max-h-64 overflow-y-auto coin-dropdown-scroll">
+              {CONFIG.AVAILABLE_COINS.map((coin: { symbol: string; name: string; icon: string }) => {
+              const coinKey = coin.symbol.toUpperCase()
+              const coinPrice = priceMap && priceMap[coinKey] ? (
+                typeof priceMap[coinKey] === 'object' && priceMap[coinKey] !== null && 'price' in priceMap[coinKey]
+                  ? parseFloat(priceMap[coinKey].price.toString())
+                  : parseFloat(String(priceMap[coinKey]))
+              ) : null
+              
+              // Get max leverage for this coin
+              const coinMaxLeverage = leverageInfo && coin.symbol === state.selectedCoin 
+                ? maxLeverage 
+                : (() => {
+                    // Mock leverage data for other coins
+                    const leverageMap: { [key: string]: number } = {
+                      'BTC-PERP': 40,
+                      'ETH-PERP': 25,
+                      'DOGE-PERP': 10,
+                      'SOL-PERP': 10
+                    }
+                    return leverageMap[coin.symbol] || 10
+                  })()
+              
+              return (
+                <div 
+                  key={coin.symbol}
+                  className={`grid grid-cols-2 gap-4 px-4 py-3 cursor-pointer transition-colors hover:bg-gray-700 ${
+                    state.selectedCoin === coin.symbol ? 'bg-teal-900/20 border-l-4 border-teal-500' : ''
+                  }`}
+                  onClick={() => {
+                    handleCoinChange(coin.symbol)
+                    setIsCoinDropdownOpen(false) // Close dropdown after selection
+                  }}
+                >
+                  {/* Symbol Column */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-white font-medium">{coin.symbol}</span>
+                    <span className="px-2 py-1 bg-green-600 text-white text-xs rounded-full">
+                      {coinMaxLeverage}x
+                    </span>
+                  </div>
+                  
+                  {/* Last Price Column */}
+                  <div className="text-white text-right">
+                    {coinPrice ? (
+                      (() => {
+                        try {
+                          const formattedPrice = formatHyperliquidPriceSync(coinPrice, coin.symbol)
+                          return `$${formattedPrice}`
+                        } catch (error) {
+                          return `$${coinPrice.toLocaleString()}`
+                        }
+                      })()
+                    ) : (
+                      <span className="text-gray-400">Loading...</span>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+            </div>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Top Configuration Bar */}
       <div className="flex gap-3 mb-6">
@@ -1755,16 +1960,6 @@ const TradingInterface: React.FC = () => {
             <span className="text-sm font-medium text-gray-300">Leverage</span>
             <div className="flex items-center gap-2">
               <span className="text-2xl font-bold text-teal-primary">{state.leverage}x</span>
-             <div className={`px-2 py-1 rounded-full text-xs font-medium ${
-               state.leverage <= 3 ? 'bg-green-900/30 text-green-400 border border-green-500/30' :
-               state.leverage <= 6 ? 'bg-yellow-900/30 text-yellow-400 border border-yellow-500/30' :
-               state.leverage <= 8 ? 'bg-orange-900/30 text-orange-400 border border-orange-500/30' :
-               'bg-red-900/30 text-red-400 border border-red-500/30'
-             }`}>
-               {state.leverage <= 3 ? 'Low Risk' :
-                state.leverage <= 6 ? 'Medium Risk' :
-                state.leverage <= 8 ? 'High Risk' : 'Very High Risk'}
-             </div>
             </div>
           </div>
           
@@ -1773,16 +1968,18 @@ const TradingInterface: React.FC = () => {
            <input
              type="range"
              min="1"
-             max="10"
+             max={Math.min(maxLeverage, availableLeverage)}
             value={state.leverage}
             onChange={(e) => handleLeverageChange(parseInt(e.target.value))}
             disabled={isLoading}
              className="flex-1 h-3 bg-gray-700 rounded-lg appearance-none cursor-pointer slider"
              style={{
-               background: `linear-gradient(to right, #14b8a6 0%, #14b8a6 ${((state.leverage - 1) / 9) * 100}%, #374151 ${((state.leverage - 1) / 9) * 100}%, #374151 100%)`
+               background: `linear-gradient(to right, #14b8a6 0%, #14b8a6 ${((state.leverage - 1) / (Math.min(maxLeverage, availableLeverage) - 1)) * 100}%, #374151 ${((state.leverage - 1) / (Math.min(maxLeverage, availableLeverage) - 1)) * 100}%, #374151 100%)`
              }}
            />
-           <span className="text-xs text-gray-400 font-medium min-w-[32px]">10x</span>
+           <span className="text-xs text-gray-400 font-medium min-w-[32px]">
+             {Math.min(maxLeverage, availableLeverage)}x
+           </span>
         </div>
         </div>
  

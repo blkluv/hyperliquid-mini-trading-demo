@@ -210,6 +210,47 @@ app.get('/api/meta', async (req, res) => {
   }
 })
 
+// Get leverage information for specific coin
+app.get('/api/leverage/:coin', async (req, res) => {
+  try {
+    if (!infoClient) {
+      return res.status(500).json({ error: 'SDK not initialized' })
+    }
+    
+    const { coin } = req.params
+    const meta = await infoClient.meta()
+    
+    if (!meta || !meta.universe) {
+      return res.status(500).json({ error: 'Meta data not available' })
+    }
+    
+    // Find the asset by name
+    const asset = meta.universe.find(a => a.name === coin || a.name === coin.replace('-PERP', ''))
+    
+    if (!asset) {
+      return res.status(404).json({ error: `Asset ${coin} not found` })
+    }
+    
+    // Get margin table information
+    const marginTable = meta.marginTables[asset.marginTableId]
+    
+    const leverageInfo = {
+      coin: asset.name,
+      maxLeverage: asset.maxLeverage,
+      marginTableId: asset.marginTableId,
+      szDecimals: asset.szDecimals,
+      pxDecimals: asset.pxDecimals,
+      marginTable: marginTable,
+      timestamp: new Date().toISOString()
+    }
+    
+    res.json(leverageInfo)
+  } catch (error) {
+    console.error(`❌ Leverage info failed for ${req.params.coin}:`, error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
 // Get current prices endpoint
 app.get('/api/prices', async (req, res) => {
   try {
