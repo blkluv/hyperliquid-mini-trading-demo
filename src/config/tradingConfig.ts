@@ -1,3 +1,5 @@
+import { getCoinPrecision } from './hyperliquidPrecisionConfig'
+
 // Trading configuration for managing hardcoded values
 // This file centralizes all trading-related constants and configurations
 
@@ -26,36 +28,8 @@ export const TRADING_CONFIG = {
   // Minimum order sizes are now calculated dynamically based on szDecimals
   // Formula: minSize = 1 / 10^szDecimals
 
-  // Size decimals for different coins (szDecimals)
-  SZ_DECIMALS: {
-    'DOGE-PERP': 0,    // Round to integer
-    'BTC-PERP': 5,     // 5 decimal places (0.00001)
-    'ETH-PERP': 2,     // 2 decimal places (0.01) - Updated to match new min size
-    'SOL-PERP': 2,     // 2 decimal places (0.01)
-    'AVAX-PERP': 2,    // 2 decimal places (0.01)
-    'MATIC-PERP': 2,   // 2 decimal places (0.01)
-    'LINK-PERP': 2,    // 2 decimal places (0.01)
-    'UNI-PERP': 2,     // 2 decimal places (0.01)
-    'AAVE-PERP': 2,    // 2 decimal places (0.01)
-    'CRV-PERP': 2,     // 2 decimal places (0.01)
-  },
-
-  // Price decimals for different coins (pxDecimals)
-  PX_DECIMALS: {
-    'DOGE-PERP': 5,    // 5 decimal places
-    'BTC-PERP': 1,     // 1 decimal place
-    'ETH-PERP': 2,     // 2 decimal places
-    'SOL-PERP': 3,     // 3 decimal places
-    'AVAX-PERP': 3,    // 3 decimal places
-    'MATIC-PERP': 4,   // 4 decimal places
-    'LINK-PERP': 4,    // 4 decimal places
-    'UNI-PERP': 4,     // 4 decimal places
-    'AAVE-PERP': 2,    // 2 decimal places
-    'CRV-PERP': 4,     // 4 decimal places
-  },
-
-  // Default precision for unknown coins
-  DEFAULT_PRECISION: 6, // 6 decimal places (0.000001)
+  // Size decimals are now managed in hyperliquidPrecisionConfig.ts
+  // This provides a centralized way to manage all precision values
 
   // Minimum order value in USD
   MIN_ORDER_VALUE_USD: 10,
@@ -86,14 +60,26 @@ export class TradingConfigHelper {
    * Get size decimals for a specific coin (szDecimals)
    */
   static getSzDecimals(coin: string): number {
-    return TRADING_CONFIG.SZ_DECIMALS[coin as keyof typeof TRADING_CONFIG.SZ_DECIMALS] || TRADING_CONFIG.DEFAULT_PRECISION
+    const precision = getCoinPrecision(coin)
+    console.log(`📊 TradingConfigHelper.getSzDecimals for ${coin}:`, {
+      coin,
+      result: precision.szDecimals,
+      source: 'hyperliquidPrecisionConfig'
+    })
+    return precision.szDecimals
   }
 
   /**
    * Get price decimals for a specific coin (pxDecimals)
    */
   static getPxDecimals(coin: string): number {
-    return TRADING_CONFIG.PX_DECIMALS[coin as keyof typeof TRADING_CONFIG.PX_DECIMALS] || 4
+    const precision = getCoinPrecision(coin)
+    console.log(`📊 TradingConfigHelper.getPxDecimals for ${coin}:`, {
+      coin,
+      result: precision.pxDecimals,
+      source: 'hyperliquidPrecisionConfig'
+    })
+    return precision.pxDecimals
   }
 
   /**
@@ -220,7 +206,3 @@ export class TradingConfigHelper {
 
 // Export individual config sections for easier imports
 export const TIMING_CONFIG = TRADING_CONFIG.TIMING
-export const SZ_DECIMALS = TRADING_CONFIG.SZ_DECIMALS
-export const PX_DECIMALS = TRADING_CONFIG.PX_DECIMALS
-// Deprecated exports for backward compatibility
-export const ROUNDING_PRECISION = TRADING_CONFIG.SZ_DECIMALS

@@ -198,21 +198,17 @@ class TradingParamsValidator {
     return totalSkewFactor > 0 && totalSkewFactor < orderCount * 10
   }
 
-  // Validate coin size rounding
+  // Validate coin size rounding using hyperliquidPrecisionConfig
   static validateCoinSizeRounding(size: number, coin: string): number {
-    const baseCoin = coin.toUpperCase().split('-')[0]
+    const { HyperliquidPrecision } = require('../utils/hyperliquidPrecision')
+    const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin)
+    const szDecimals = assetInfo.szDecimals
     
-    switch (baseCoin) {
-      case 'DOGE':
-        return Math.round(size) // Round to integer
-      case 'BTC':
-        return Math.round(size * 100000) / 100000 // 5 decimal places
-      case 'ETH':
-        return Math.round(size * 10000) / 10000 // 4 decimal places
-      case 'SOL':
-        return Math.round(size * 100) / 100 // 2 decimal places
-      default:
-        return Math.round(size * 1000000) / 1000000 // 6 decimal places
+    if (szDecimals === 0) {
+      return Math.round(size) // Round to integer
+    } else {
+      const multiplier = Math.pow(10, szDecimals)
+      return Math.round(size * multiplier) / multiplier
     }
   }
 }

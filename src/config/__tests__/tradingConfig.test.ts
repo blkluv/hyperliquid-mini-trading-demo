@@ -9,9 +9,9 @@ describe('TradingConfigHelper', () => {
   })
 
   test('should get correct price decimals for different coins', () => {
-    expect(TradingConfigHelper.getPxDecimals('BTC-PERP')).toBe(1)
-    expect(TradingConfigHelper.getPxDecimals('ETH-PERP')).toBe(2)
-    expect(TradingConfigHelper.getPxDecimals('SOL-PERP')).toBe(3)
+    expect(TradingConfigHelper.getPxDecimals('BTC-PERP')).toBe(0)
+    expect(TradingConfigHelper.getPxDecimals('ETH-PERP')).toBe(1)
+    expect(TradingConfigHelper.getPxDecimals('SOL-PERP')).toBe(2)
     expect(TradingConfigHelper.getPxDecimals('DOGE-PERP')).toBe(5)
   })
 

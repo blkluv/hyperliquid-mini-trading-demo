@@ -45,7 +45,172 @@ let isFetchingPrices = false
 const twapTasks = new Map()
 let twapTaskCounter = 0
 
+// 移除缓存，直接从Hyperliquid API获取数据
+const DEFAULT_SZ_DECIMALS = 6
+const DEFAULT_PX_DECIMALS = 4
+
+const getDecimalPlaces = (value) => {
+  if (value === null || value === undefined) {
+    return null
+  }
+
+  const stringValue = typeof value === 'number' ? value.toString() : String(value)
+  if (!stringValue.includes('.')) {
+    return 0
+  }
+
+  const fractional = stringValue.split('.')[1]?.replace(/0+$/, '') ?? ''
+  return fractional.length
+}
+
+const derivePxDecimalsFromContext = (ctx) => {
+  if (!ctx) {
+    return DEFAULT_PX_DECIMALS
+  }
+
+  const candidates = []
+  if (ctx.markPx !== undefined && ctx.markPx !== null) candidates.push(ctx.markPx)
+  if (ctx.midPx !== undefined && ctx.midPx !== null) candidates.push(ctx.midPx)
+  if (ctx.oraclePx !== undefined && ctx.oraclePx !== null) candidates.push(ctx.oraclePx)
+  if (Array.isArray(ctx.impactPxs)) {
+    ctx.impactPxs.forEach(px => candidates.push(px))
+  }
+
+  const decimals = candidates
+    .map(getDecimalPlaces)
+    .filter(value => value !== null && Number.isFinite(value))
+
+  if (!decimals.length) {
+    return DEFAULT_PX_DECIMALS
+  }
+
+  const maxDecimals = Math.max(...decimals)
+  return Math.min(Math.max(maxDecimals, 0), 8)
+}
+
+const computeTickSizeFromBookLevels = (levels = []) => {
+  if (!Array.isArray(levels) || levels.length === 0) {
+    return null
+  }
+
+  const prices = levels
+    .map(level => parseFloat(level?.px))
+    .filter(price => Number.isFinite(price))
+    .sort((a, b) => a - b)
+
+  let minDiff = Infinity
+  for (let i = 1; i < prices.length; i++) {
+    const diff = prices[i] - prices[i - 1]
+    if (diff > 0 && diff < minDiff) {
+      minDiff = diff
+    }
+  }
+
+  if (!Number.isFinite(minDiff) || minDiff <= 0) {
+    return null
+  }
+
+  const normalized = Number(minDiff.toFixed(8))
+  return normalized > 0 ? normalized : null
+}
+
+const derivePxDecimalsFromOrderBook = async (coin) => {
+  if (!infoClient || !coin) {
+    return null
+  }
+
+  try {
+    const book = await infoClient.l2Book({ coin })
+    const levels = Array.isArray(book?.levels)
+      ? book.levels.flatMap(side => Array.isArray(side) ? side : [])
+      : []
+
+    const tickSize = computeTickSizeFromBookLevels(levels)
+    if (!tickSize) {
+      return null
+    }
+
+    const decimals = getDecimalPlaces(tickSize)
+    return decimals !== null ? decimals : null
+  } catch (error) {
+    console.warn(`⚠️ Failed to derive pxDecimals from order book for ${coin}:`, error.message || error)
+    return null
+  }
+}
+
+const derivePxDecimalsForAsset = async (asset, ctx) => {
+  const contextDecimals = derivePxDecimalsFromContext(ctx)
+
+  const orderBookDecimals = await derivePxDecimalsFromOrderBook(asset?.name)
+  if (orderBookDecimals !== null && Number.isFinite(orderBookDecimals)) {
+    return orderBookDecimals
+  }
+
+  return contextDecimals
+}
+
+// 移除缓存函数，直接从API获取数据
+
 const getNetworkName = () => (CONFIG.USE_TESTNET ? 'testnet' : 'mainnet')
+
+// 移除缓存初始化函数，直接从API获取数据
+
+// Get szDecimals directly from Hyperliquid API
+const getSzDecimals = async (coin) => {
+  try {
+    if (!infoClient) {
+      console.warn(`⚠️ InfoClient not available for ${coin}, using defaults`)
+      return {
+        szDecimals: DEFAULT_SZ_DECIMALS,
+        pxDecimals: DEFAULT_PX_DECIMALS,
+        isPerp: coin.includes('-PERP'),
+        name: coin
+      }
+    }
+    
+    console.log(`🔍 Getting asset metadata for ${coin} from Hyperliquid API`)
+    
+    // Get fresh data from API
+    const [meta, assetCtxs] = await infoClient.metaAndAssetCtxs()
+    
+    if (meta && meta.universe) {
+      // Find the asset in the universe
+      const asset = meta.universe.find(a => a.name === coin)
+      if (asset && typeof asset.szDecimals === 'number') {
+        const assetIndex = meta.universe.indexOf(asset)
+        const ctx = assetCtxs?.[assetIndex]
+        const pxDecimals = derivePxDecimalsFromContext(ctx)
+        
+        const result = {
+          szDecimals: asset.szDecimals,
+          pxDecimals,
+          isPerp: coin.includes('-PERP'),
+          name: coin
+        }
+        
+        console.log(`✅ Found asset data for ${coin}:`, result)
+        return result
+      }
+    }
+    
+    // Asset not found, use defaults
+    console.log(`⚠️ Asset ${coin} not found in API, using defaults`)
+    return {
+      szDecimals: DEFAULT_SZ_DECIMALS,
+      pxDecimals: DEFAULT_PX_DECIMALS,
+      isPerp: coin.includes('-PERP'),
+      name: coin
+    }
+  } catch (error) {
+    console.error(`❌ Error getting szDecimals for ${coin}:`, error)
+    return {
+      szDecimals: DEFAULT_SZ_DECIMALS,
+      pxDecimals: DEFAULT_PX_DECIMALS,
+      isPerp: coin.includes('-PERP'),
+      name: coin
+    }
+  }
+}
 
 // Get minimum order size based on szDecimals
 const getMinOrderSize = (coin) => {
@@ -169,6 +334,8 @@ const initializeSDK = async () => {
     console.log('✅ SDK initialized successfully!')
     console.log(`📊 Found ${meta.universe.length} assets`)
     
+    // 移除缓存初始化，直接从API获取数据
+    
     // Start price polling only after successful initialization
     if (pricePollInterval) {
       clearInterval(pricePollInterval)
@@ -210,6 +377,128 @@ app.get('/api/meta', async (req, res) => {
   }
 })
 
+// Get asset metadata endpoint (specifically for szDecimals/pxDecimals)
+app.get('/api/asset-metadata/:coin', async (req, res) => {
+  try {
+    const coin = req.params.coin
+    console.log(`🔍 Getting asset metadata for: ${coin}`)
+    
+    // Use cached szDecimals data
+    const assetData = await getSzDecimals(coin)
+    
+    if (assetData && assetData.szDecimals !== undefined) {
+      console.log(`✅ Found cached asset data for ${coin}:`, assetData)
+      
+      res.json({
+        name: assetData.name,
+        szDecimals: assetData.szDecimals,
+        pxDecimals: assetData.pxDecimals,
+        isPerp: assetData.isPerp,
+        found: true,
+        source: 'cache'
+      })
+    } else {
+      console.log(`❌ Asset ${coin} not found in cache`)
+      res.status(404).json({ 
+        error: `Asset ${coin} not found`,
+        found: false,
+        availableAssets: ['BTC-PERP', 'ETH-PERP', 'SOL-PERP', 'DOGE-PERP'] // 示例资产列表
+      })
+    }
+  } catch (error) {
+    console.error(`❌ Asset metadata failed for ${req.params.coin}:`, error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// 移除缓存状态端点，不再使用缓存
+
+// Get top 10 coins ranked by 24h notional volume
+app.get('/api/top-coins', async (req, res) => {
+  try {
+    if (!infoClient) {
+      return res.status(500).json({ error: 'SDK not initialized' })
+    }
+
+    const [meta, assetCtxs] = await infoClient.metaAndAssetCtxs()
+
+    if (!meta || !meta.universe || !Array.isArray(assetCtxs)) {
+      return res.status(500).json({ error: 'Unable to load meta/asset context data' })
+    }
+
+    const coinsWithVolume = meta.universe
+      .map((asset, index) => {
+        const ctx = assetCtxs[index]
+        const dayNotionalVolume = ctx && typeof ctx.dayNtlVlm === 'string' ? parseFloat(ctx.dayNtlVlm) : 0
+        const dayBaseVolume = ctx && typeof ctx.dayBaseVlm === 'string' ? parseFloat(ctx.dayBaseVlm) : 0
+
+        return {
+          asset,
+          ctx,
+          dayNotionalVolume: Number.isFinite(dayNotionalVolume) ? dayNotionalVolume : 0,
+          dayBaseVolume: Number.isFinite(dayBaseVolume) ? dayBaseVolume : 0
+        }
+      })
+      .filter(({ asset }) => asset?.name && !asset?.isDelisted)
+
+    const sortedCoins = coinsWithVolume
+      .sort((a, b) => {
+        if (b.dayNotionalVolume !== a.dayNotionalVolume) {
+          return b.dayNotionalVolume - a.dayNotionalVolume
+        }
+        if (b.dayBaseVolume !== a.dayBaseVolume) {
+          return b.dayBaseVolume - a.dayBaseVolume
+        }
+        // Fall back to leverage to break ties
+        if (b.asset.maxLeverage !== a.asset.maxLeverage) {
+          return b.asset.maxLeverage - a.asset.maxLeverage
+        }
+        return a.asset.name.localeCompare(b.asset.name)
+      })
+      .slice(0, 10)
+      .map(({ asset, ctx, dayNotionalVolume, dayBaseVolume }) => {
+        const symbol = asset.name.includes('-PERP') ? asset.name : `${asset.name}-PERP`
+        const pxDecimals = derivePxDecimalsFromContext(ctx)
+
+        // 移除缓存调用，直接从API获取数据
+
+        return {
+          symbol,
+          name: asset.name,
+          maxLeverage: asset.maxLeverage,
+          szDecimals: asset.szDecimals,
+          pxDecimals,
+          marginTableId: asset.marginTableId,
+          dayNotionalVolume,
+          dayBaseVolume,
+          markPrice: ctx?.markPx ? parseFloat(ctx.markPx) : null,
+          midPrice: ctx?.midPx ? parseFloat(ctx.midPx) : null,
+          oraclePrice: ctx?.oraclePx ? parseFloat(ctx.oraclePx) : null,
+          change24h: ctx?.prevDayPx && ctx?.markPx ? 
+            parseFloat(ctx.markPx) - parseFloat(ctx.prevDayPx) : null,
+          change24hPercent: ctx?.prevDayPx && ctx?.markPx ? 
+            ((parseFloat(ctx.markPx) - parseFloat(ctx.prevDayPx)) / parseFloat(ctx.prevDayPx)) * 100 : null
+        }
+      })
+
+    console.log(`📊 Top 10 coins by volume:`, sortedCoins.slice(0, 3).map(coin => ({
+      symbol: coin.symbol,
+      volume: coin.dayNotionalVolume,
+      price: coin.markPrice
+    })))
+
+    res.json({
+      coins: sortedCoins,
+      count: sortedCoins.length,
+      network: getNetworkName(),
+      timestamp: new Date().toISOString()
+    })
+  } catch (error) {
+    console.error('❌ Top coins failed:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
 // Get leverage information for specific coin
 app.get('/api/leverage/:coin', async (req, res) => {
   try {
@@ -218,18 +507,23 @@ app.get('/api/leverage/:coin', async (req, res) => {
     }
     
     const { coin } = req.params
-    const meta = await infoClient.meta()
+    const [meta, assetCtxs] = await infoClient.metaAndAssetCtxs()
     
     if (!meta || !meta.universe) {
       return res.status(500).json({ error: 'Meta data not available' })
     }
     
     // Find the asset by name
-    const asset = meta.universe.find(a => a.name === coin || a.name === coin.replace('-PERP', ''))
+    const assetIndex = meta.universe.findIndex(a => a.name === coin || a.name === coin.replace('-PERP', ''))
+    const asset = assetIndex >= 0 ? meta.universe[assetIndex] : null
     
     if (!asset) {
       return res.status(404).json({ error: `Asset ${coin} not found` })
     }
+    
+    const ctx = assetCtxs?.[assetIndex]
+    const pxDecimals = derivePxDecimalsFromContext(ctx)
+    const metadata = await getSzDecimals(asset.name.includes('-PERP') ? asset.name : `${asset.name}-PERP`)
     
     // Get margin table information
     const marginTable = meta.marginTables[asset.marginTableId]
@@ -238,8 +532,8 @@ app.get('/api/leverage/:coin', async (req, res) => {
       coin: asset.name,
       maxLeverage: asset.maxLeverage,
       marginTableId: asset.marginTableId,
-      szDecimals: asset.szDecimals,
-      pxDecimals: asset.pxDecimals,
+      szDecimals: metadata?.szDecimals ?? asset.szDecimals,
+      pxDecimals: metadata?.pxDecimals ?? pxDecimals,
       marginTable: marginTable,
       timestamp: new Date().toISOString()
     }
@@ -338,26 +632,43 @@ app.get('/api/market-data', async (req, res) => {
       return res.status(500).json({ error: 'SDK not initialized' })
     }
     
-    const meta = await infoClient.meta()
+    const [meta, assetCtxs] = await infoClient.metaAndAssetCtxs()
     const prices = {}
-    
-    meta.universe.forEach(asset => {
-      if (asset.name) {
-        console.log(`🔍 Asset ${asset.name} metadata:`, {
-          hasSzDecimals: 'szDecimals' in asset,
-          hasPxDecimals: 'pxDecimals' in asset,
-          szDecimals: asset.szDecimals,
-          pxDecimals: asset.pxDecimals,
-          allKeys: Object.keys(asset)
-        })
-        
-        prices[asset.name] = {
-          price: asset.markPrice,
-          change24h: asset.change24h,
-          volume24h: asset.volume24h,
-          szDecimals: asset.szDecimals,
-          pxDecimals: asset.pxDecimals || 4 // 默认值，如果API没有提供
-        }
+
+    meta.universe.forEach((asset, index) => {
+      if (!asset?.name) {
+        return
+      }
+
+      const ctx = assetCtxs?.[index]
+      const pxDecimals = derivePxDecimalsFromContext(ctx)
+      const markPrice = ctx?.markPx ? parseFloat(ctx.markPx) : null
+      const midPrice = ctx?.midPx ? parseFloat(ctx.midPx) : null
+      const oraclePrice = ctx?.oraclePx ? parseFloat(ctx.oraclePx) : null
+      const volume24h = ctx?.dayBaseVlm ? parseFloat(ctx.dayBaseVlm) : null
+      const prevDayPx = ctx?.prevDayPx ? parseFloat(ctx.prevDayPx) : null
+      const change24h = markPrice !== null && prevDayPx !== null ? markPrice - prevDayPx : null
+
+      const metadata = {
+        szDecimals: asset.szDecimals,
+        pxDecimals
+      }
+
+      const normalizedEntry = {
+        price: markPrice ?? midPrice ?? oraclePrice,
+        change24h,
+        volume24h,
+        szDecimals: metadata.szDecimals ?? asset.szDecimals,
+        pxDecimals: metadata.pxDecimals ?? pxDecimals,
+        markPx: markPrice,
+        midPx: midPrice,
+        oraclePx: oraclePrice
+      }
+
+      prices[asset.name] = normalizedEntry
+
+      if (!asset.name.includes('-PERP')) {
+        prices[`${asset.name}-PERP`] = normalizedEntry
       }
     })
     

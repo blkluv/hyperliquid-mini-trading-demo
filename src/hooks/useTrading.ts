@@ -3,7 +3,7 @@ import toast from 'react-hot-toast'
 import { hyperliquidService, LeverageParams, OrderParams } from '../services/hyperliquidService'
 import { CONFIG } from '../config/config'
 import { TradingConfigHelper } from '../config/tradingConfig'
-import { formatHyperliquidPriceSync, formatHyperliquidSizeSync } from '../utils/hyperliquidPrecision'
+import { HyperliquidPrecision, formatHyperliquidPriceSync, formatHyperliquidSizeSync } from '../utils/hyperliquidPrecision'
 
 export interface TradingState {
   selectedCoin: string
@@ -808,17 +808,11 @@ export const useTrading = () => {
     } catch (error) {
       console.error('Error formatting price:', error)
       // Fallback to original logic if precision formatting fails
-      const baseCoin = coin.toUpperCase().split('-')[0]
-      const tickSizes: { [key: string]: number } = {
-        'BTC': 0.5,
-        'ETH': 0.05,
-        'SOL': 0.01,
-        'DOGE': 0.0001,
-        'default': 0.01
-      }
-      const tickSize = tickSizes[baseCoin] || tickSizes.default
+      const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin)
+      const pxDecimals = assetInfo.pxDecimals
+      const tickSize = pxDecimals > 0 ? Math.pow(10, -pxDecimals) : 1
       const roundedPrice = Math.round(price / tickSize) * tickSize
-      const decimalPlaces = tickSize < 1 ? Math.abs(Math.log10(tickSize)) : 0
+      const decimalPlaces = pxDecimals > 0 ? pxDecimals : 0
       return roundedPrice.toFixed(decimalPlaces)
     }
   }
