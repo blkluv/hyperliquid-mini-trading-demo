@@ -38,11 +38,14 @@ export interface TradingState {
 }
 
 export interface AccountInfo {
-  availableToTrade: string
+  availableToTrade: number
+  accountValue: number
+  totalNotional: number
+  transferRequirement: number
   currentPosition: string
   liquidationPrice: string
   orderValue: string
-  marginRequired: string
+  marginRequired: number
   slippage: string
   fees: string
 }
@@ -52,11 +55,14 @@ export const useTrading = () => {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [accountInfo, setAccountInfo] = useState<AccountInfo>({
-    availableToTrade: '56.78',
+    availableToTrade: 0,
+    accountValue: 0,
+    totalNotional: 0,
+    transferRequirement: 0,
     currentPosition: '0.00000 BTC',
     liquidationPrice: 'N/A',
     orderValue: 'N/A',
-    marginRequired: 'N/A',
+    marginRequired: 0,
     slippage: 'Est: 0% / Max: 8.00%',
     fees: '0.0432% / 0.0144%'
   })
@@ -148,7 +154,7 @@ export const useTrading = () => {
     orderType: 'market',
     side: 'buy',
     size: '',
-    sizeUnit: 'USD',
+    sizeUnit: CONFIG.DEFAULT_COIN,
     sizePercentage: 0,
     reduceOnly: false,
     takeProfitStopLoss: false,
@@ -157,8 +163,8 @@ export const useTrading = () => {
     timeInForce: 'GTC',
     stopLossPrice: '',
     takeProfitPrice: '',
-    takeProfitGain: '10',
-    stopLossLoss: '10',
+    takeProfitGain: '',
+    stopLossLoss: '',
     // Scale order defaults
     scaleStartPrice: '',
     scaleEndPrice: '',
@@ -207,7 +213,10 @@ export const useTrading = () => {
       if (walletBalance) {
         const accountValue = parseFloat(walletBalance.accountValue || '0')
         const totalMarginUsed = parseFloat(walletBalance.totalMarginUsed || '0')
-        const availableToTrade = accountValue - totalMarginUsed
+        const totalNotional = parseFloat(walletBalance.totalNtlPos || '0')
+
+        const transferRequirement = Math.max(totalMarginUsed, totalNotional * 0.1)
+        const availableToTrade = Math.max(0, accountValue - transferRequirement)
 
         // Get position for the currently selected coin
         let currentPosition = '0.00000 BTC'
@@ -241,10 +250,13 @@ export const useTrading = () => {
 
         setAccountInfo(prev => ({
           ...prev,
-          availableToTrade: availableToTrade.toFixed(2),
-          currentPosition: currentPosition,
-          liquidationPrice: liquidationPrice,
-          marginRequired: totalMarginUsed.toFixed(2)
+          availableToTrade,
+          accountValue,
+          totalNotional,
+          transferRequirement,
+          currentPosition,
+          liquidationPrice,
+          marginRequired: totalMarginUsed
         }))
       }
     } catch (err) {
@@ -626,7 +638,9 @@ export const useTrading = () => {
     const coinMinSize = TradingConfigHelper.getMinOrderSize(state.selectedCoin)
     if (roundedSubOrderSize < coinMinSize) {
       const coinLabel = state.selectedCoin?.replace('-PERP', '') || 'asset'
-      setError(`Sub-order size too small. Each sub-order would be ${roundedSubOrderSize.toFixed(4)} ${coinLabel}, but minimum is ${coinMinSize} ${coinLabel}`)
+      const formattedSub = formatHyperliquidSizeSync(roundedSubOrderSize, state.selectedCoin || 'BTC-PERP')
+      const formattedMin = formatHyperliquidSizeSync(coinMinSize, state.selectedCoin || 'BTC-PERP')
+      setError(`Sub-order size too small. Each sub-order would be ${formattedSub} ${coinLabel}, but minimum is ${formattedMin} ${coinLabel}`)
       return
     }
 
@@ -693,7 +707,7 @@ export const useTrading = () => {
         task: result.task,
         totalOrders: numberOfOrders,
         totalDuration: totalRunningTimeMinutes,
-        subOrderSize: roundedSubOrderSize.toFixed(6) // Use rounded size consistent with UI
+        subOrderSize: formatHyperliquidSizeSync(roundedSubOrderSize, state.selectedCoin || 'BTC-PERP')
       }
 
     } catch (err) {

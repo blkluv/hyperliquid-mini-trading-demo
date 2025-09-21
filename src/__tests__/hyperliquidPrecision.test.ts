@@ -18,7 +18,7 @@ describe('HyperliquidPrecision', () => {
       const assetInfo = { szDecimals: 5, pxDecimals: 1, isPerp: true }
       const price = 50000.123456
       const result = HyperliquidPrecision.formatPrice(price, assetInfo)
-      expect(result).toBe('50000') // 5 significant digits, 1 decimal place (pxDecimals=1)
+      expect(result).toBe('50000.0') // 5 significant digits, 1 decimal place (pxDecimals=1)
     })
 
     it('should format ETH price correctly', () => {
@@ -111,7 +111,7 @@ describe('HyperliquidPrecision', () => {
     it('should return correct info for ETH-PERP', () => {
       const result = HyperliquidPrecision.getDefaultAssetInfo('ETH-PERP')
       expect(result.szDecimals).toBe(2)
-      expect(result.pxDecimals).toBe(2)
+      expect(result.pxDecimals).toBe(1)
       expect(result.isPerp).toBe(true)
     })
 

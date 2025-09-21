@@ -22,14 +22,43 @@ export interface AssetMetadata {
   isPerp: boolean
 }
 
-// 移除缓存，直接从API获取，失败时回退到hyperliquidPrecisionConfig.ts
+// 轻量级缓存：优先使用API结果，失败时回退到hyperliquidPrecisionConfig
+
+const assetMetadataCache: Record<string, AssetMetadata> = {}
+
+const normalizeCoinKeys = (coin: string): string[] => {
+  const upper = coin.toUpperCase()
+  const base = upper.replace(/-(PERP|SPOT)$/i, '')
+  const variants = new Set<string>([upper, base])
+  variants.add(`${base}-PERP`)
+  variants.add(`${base}-SPOT`)
+  return Array.from(variants).filter(key => key.length > 0)
+}
+
+const cacheMetadata = (coin: string, metadata: AssetMetadata) => {
+  normalizeCoinKeys(coin).forEach(key => {
+    assetMetadataCache[key] = {
+      name: metadata.name,
+      szDecimals: metadata.szDecimals,
+      pxDecimals: metadata.pxDecimals,
+      isPerp: metadata.isPerp
+    }
+  })
+}
 
 export class HyperliquidPrecision {
-  // 移除getCoinKeyVariants方法，不再使用缓存
-
-  // 移除缓存相关方法，直接从API获取
-
-  // 移除primeCacheFromCoins方法，不再使用缓存
+  static primeCacheFromCoins(coins: Array<{ symbol: string; szDecimals?: number; pxDecimals?: number; isPerp?: boolean }>) {
+    coins.forEach(coin => {
+      if (typeof coin.szDecimals === 'number' && typeof coin.pxDecimals === 'number') {
+        cacheMetadata(coin.symbol, {
+          name: coin.symbol,
+          szDecimals: coin.szDecimals,
+          pxDecimals: coin.pxDecimals,
+          isPerp: coin.isPerp ?? coin.symbol.endsWith('-PERP')
+        })
+      }
+    })
+  }
 
   /**
    * 格式化价格，符合Hyperliquid精度要求
@@ -193,10 +222,7 @@ export class HyperliquidPrecision {
    */
   private static formatWithDecimals(num: number, decimals: number): string {
     const formatted = num.toFixed(decimals)
-    // 如果小数部分都是0，则移除小数部分
-    if (decimals > 0 && formatted.endsWith('0'.repeat(decimals))) {
-      return num.toString()
-    }
+    // 始终保留配置要求的小数位数，以匹配官方前端展示
     return formatted
   }
 
@@ -206,6 +232,14 @@ export class HyperliquidPrecision {
   static async getAssetMetadata(coin: string): Promise<AssetMetadata | null> {
     try {
       console.log(`🔍 Getting asset metadata for: ${coin}`)
+      const variants = normalizeCoinKeys(coin)
+      for (const key of variants) {
+        const cached = assetMetadataCache[key]
+        if (cached) {
+          console.log(`📋 Returning cached metadata for ${coin}:`, cached)
+          return cached
+        }
+      }
       
       // 直接调用API，不使用缓存
       console.log(`🔄 Fetching fresh metadata from API for ${coin}`)
@@ -229,7 +263,7 @@ export class HyperliquidPrecision {
                 pxDecimals: data.pxDecimals,
                 isPerp: data.isPerp ?? (coinFormat.toUpperCase().includes('-PERP'))
               }
-              
+              cacheMetadata(coin, metadata)
               console.log(`✅ Found metadata for ${coin}:`, metadata)
               return metadata
             }
@@ -257,15 +291,16 @@ export class HyperliquidPrecision {
         foundCoin: data.prices ? coin in data.prices : false
       })
       
-      if (data.prices && data.prices[coin]) {
-        const assetData = data.prices[coin]
+      const prices = data.prices ?? {}
+      if (prices[coin]) {
+        const assetData = prices[coin]
         const metadata: AssetMetadata = {
           name: coin,
           szDecimals: assetData.szDecimals,
           pxDecimals: assetData.pxDecimals,
-          isPerp: coin.includes('-PERP')
+          isPerp: coin.toUpperCase().includes('-PERP')
         }
-        
+        cacheMetadata(coin, metadata)
         console.log(`✅ Found metadata for ${coin} in market-data:`, metadata)
         return metadata
       }
@@ -296,7 +331,7 @@ export class HyperliquidPrecision {
   }
 
   /**
-   * 获取szDecimals（直接从API获取，失败时回退到hyperliquidPrecisionConfig.ts）
+   * 获取szDecimals（直接从API获取，失败时回退到hyperliquidPrecisionConfig）
    */
   static async getSzDecimals(coin: string): Promise<number> {
     try {
@@ -309,14 +344,14 @@ export class HyperliquidPrecision {
       console.warn(`⚠️ Failed to get szDecimals from API for ${coin}:`, error)
     }
 
-    // 直接回退到hyperliquidPrecisionConfig.ts
+    // 直接回退到hyperliquidPrecisionConfig
     const fallbackPrecision = getCoinPrecision(coin)
     console.log(`⚠️ Using fallback szDecimals for ${coin}: ${fallbackPrecision.szDecimals}`)
     return fallbackPrecision.szDecimals
   }
 
   /**
-   * 获取pxDecimals（直接从API获取，失败时回退到hyperliquidPrecisionConfig.ts）
+   * 获取pxDecimals（直接从API获取，失败时回退到hyperliquidPrecisionConfig）
    */
   static async getPxDecimals(coin: string): Promise<number> {
     try {
@@ -329,7 +364,7 @@ export class HyperliquidPrecision {
       console.warn(`⚠️ Failed to get pxDecimals from API for ${coin}:`, error)
     }
 
-    // 直接回退到hyperliquidPrecisionConfig.ts
+    // 直接回退到hyperliquidPrecisionConfig
     const fallbackPrecision = getCoinPrecision(coin)
     console.log(`⚠️ Using fallback pxDecimals for ${coin}: ${fallbackPrecision.pxDecimals}`)
     return fallbackPrecision.pxDecimals
@@ -339,9 +374,16 @@ export class HyperliquidPrecision {
    * 为常见资产创建默认的AssetInfo（回退方案）
    */
   static getDefaultAssetInfo(coin: string): AssetInfo {
+    const cached = assetMetadataCache[coin.toUpperCase()]
+    if (cached) {
+      return {
+        szDecimals: cached.szDecimals,
+        pxDecimals: cached.pxDecimals,
+        isPerp: cached.isPerp
+      }
+    }
+
     console.warn(`🔧 FALLBACK: Missing asset decimals metadata for ${coin}, using config defaults`)
-    
-    // 直接使用配置文件中的精度设置
     return getCoinPrecision(coin)
   }
 

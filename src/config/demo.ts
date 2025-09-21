@@ -33,11 +33,11 @@ export const validatePrivateKey = (privateKey: string): boolean => {
 // Helper function to get demo account info
 export const getDemoAccountInfo = () => {
   return {
-    availableToTrade: '1000.00',
+    availableToTrade: 1000,
     currentPosition: '0.00000 BTC',
     liquidationPrice: 'N/A',
     orderValue: 'N/A',
-    marginRequired: 'N/A',
+    marginRequired: 0,
     slippage: 'Est: 0% / Max: 8.00%',
     fees: '0.0432% / 0.0144%'
   }

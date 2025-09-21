@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { ChevronDown, AlertCircle, Network } from 'lucide-react'
 import toast, { Toaster } from 'react-hot-toast'
 import { useTrading } from '../hooks/useTrading'
@@ -8,6 +8,7 @@ import { CONFIG } from '../config/config'
 import { TradingConfigHelper } from '../config/tradingConfig'
 import { hyperliquidService } from '../services/hyperliquidService'
 import { validateHyperliquidPrice, validateHyperliquidSizeSync, formatHyperliquidPriceSync, formatHyperliquidSizeSync, getHyperliquidSizeValidationError, validateHyperliquidPriceSync, HyperliquidPrecision } from '../utils/hyperliquidPrecision'
+import { calculateIsolatedMarginRequirement, calculateLiquidationPriceFromInputs } from '../utils/liquidationPrice'
 import { leverageService, LeverageInfo } from '../services/leverageService'
 
 const applyMaxDigitLimit = (value: string, maxDigits = 12) => {
@@ -98,41 +99,45 @@ const normalizeLeadingZeros = (value: string) => {
 
 // Helper function to check if decimal insertion in middle is valid
 const isValidDecimalInsertion = (value: string, currentValue: string, maxDecimals: number | null | undefined): boolean => {
+  console.log(`🔍 isValidDecimalInsertion: value="${value}", maxDecimals=${maxDecimals}`)
+  
   if (maxDecimals === 0) {
-    return !value.includes('.')
+    const hasDecimal = value.includes('.')
+    console.log(`🔍 maxDecimals=0, hasDecimal=${hasDecimal}, returning ${!hasDecimal}`)
+    return !hasDecimal
   }
 
   // Check for multiple decimal points - reject if more than one
   const dotCount = (value.match(/\./g) || []).length
   if (dotCount > 1) {
+    console.log(`🔍 Multiple decimal points detected, returning false`)
     return false // Multiple decimal points are invalid
   }
 
   if (!value.includes('.')) {
+    console.log(`🔍 No decimal point, returning true`)
     return true // No decimal point is always valid
   }
-  
-  // If current value already has a decimal point and user is trying to add another
-  if (currentValue && currentValue.includes('.') && value.includes('.')) {
-    return false // Reject additional decimal points
-  }
-  
+
   // Check if decimal point is in the middle
   const lastDotIndex = value.lastIndexOf('.')
   if (lastDotIndex === value.length - 1) {
+    console.log(`🔍 Decimal point at end, returning true`)
     return true // Decimal point at the end is always valid
   }
-  
+
   if (typeof maxDecimals === 'number' && maxDecimals >= 0) {
     const parts = value.split('.')
     if (parts.length === 2) {
       const decimalPart = parts[1]
       if (decimalPart.length > maxDecimals) {
+        console.log(`🔍 Decimal part too long: ${decimalPart.length} > ${maxDecimals}, returning false`)
         return false // Invalid decimal length
       }
     }
   }
-  
+
+  console.log(`🔍 Final return: true`)
   return true
 }
 
@@ -213,6 +218,9 @@ const TradingInterface: React.FC = () => {
   const [maxLeverage, setMaxLeverage] = useState<number>(50) // Default fallback
   const [availableLeverage, setAvailableLeverage] = useState<number>(50)
   
+  // Current coin position state
+  const [currentCoinPosition, setCurrentCoinPosition] = useState<string>('0.00000 BTC')
+  
   // Leverage update delay state
   const [leverageUpdateTimeout, setLeverageUpdateTimeout] = useState<NodeJS.Timeout | null>(null)
   
@@ -222,6 +230,9 @@ const TradingInterface: React.FC = () => {
   // Order type dropdown state
   const [isOrderTypeDropdownOpen, setIsOrderTypeDropdownOpen] = useState<boolean>(false)
   
+  // Size unit dropdown state
+  const [isSizeUnitDropdownOpen, setIsSizeUnitDropdownOpen] = useState<boolean>(false)
+  
   // Dynamic top coins from API
   const [topCoins, setTopCoins] = useState<TopCoin[]>([])
 
@@ -229,6 +240,78 @@ const TradingInterface: React.FC = () => {
     szDecimals: null,
     pxDecimals: null
   })
+
+  const precisionCacheRef = React.useRef<Record<string, { sz?: number; px?: number }>>({})
+
+  const recordPrecision = React.useCallback((symbol: string, sz?: number | null, px?: number | null) => {
+    const upper = symbol.toUpperCase()
+    const base = upper.replace(/-(PERP|SPOT)$/i, '')
+
+    const update = (key: string, field: 'sz' | 'px', value: number) => {
+      precisionCacheRef.current[key] = {
+        ...precisionCacheRef.current[key],
+        [field]: value
+      }
+    }
+
+    if (typeof sz === 'number' && Number.isFinite(sz)) {
+      update(upper, 'sz', sz)
+      update(base, 'sz', sz)
+    }
+
+    if (typeof px === 'number' && Number.isFinite(px)) {
+      update(upper, 'px', px)
+      update(base, 'px', px)
+    }
+  }, [])
+
+  const getCachedSzDecimals = React.useCallback((symbol: string): number => {
+    const upper = symbol.toUpperCase()
+    const cached = precisionCacheRef.current[upper]?.sz
+    if (typeof cached === 'number') {
+      return cached
+    }
+    const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(upper)
+    recordPrecision(upper, assetInfo.szDecimals, assetInfo.pxDecimals)
+    return assetInfo.szDecimals
+  }, [recordPrecision])
+
+  const getCachedPxDecimals = React.useCallback((symbol: string): number => {
+    const upper = symbol.toUpperCase()
+    const cached = precisionCacheRef.current[upper]?.px
+    if (typeof cached === 'number') {
+      return cached
+    }
+    const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(upper)
+    recordPrecision(upper, assetInfo.szDecimals, assetInfo.pxDecimals)
+    return assetInfo.pxDecimals
+  }, [recordPrecision])
+
+  const formatPriceWithPrecision = React.useCallback((price: number, coin: string): string => {
+    try {
+      return formatPriceForTickSize(price, coin)
+    } catch (error) {
+      console.warn('Failed to format price with tick size, falling back to decimals:', error)
+      const decimals = getCachedPxDecimals(coin)
+      return decimals <= 0 ? Math.round(price).toString() : price.toFixed(decimals)
+    }
+  }, [formatPriceForTickSize, getCachedPxDecimals])
+
+  const formatSizeWithPrecision = React.useCallback((size: number, coin: string): string => {
+    const coinKey = coin.includes('-') ? coin : `${coin}-PERP`
+    try {
+      return formatHyperliquidSizeSync(size, coinKey)
+    } catch (error) {
+      console.warn('Failed to format size with precision, falling back to cached decimals:', error)
+      const decimals = getCachedSzDecimals(coinKey)
+      if (decimals <= 0) {
+        return Math.floor(size).toString()
+      }
+      const multiplier = Math.pow(10, decimals)
+      const rounded = Math.round(size * multiplier) / multiplier
+      return rounded.toFixed(decimals)
+    }
+  }, [getCachedSzDecimals])
 
   const formatNotionalVolume = React.useCallback((volume?: number) => {
     if (typeof volume !== 'number' || !Number.isFinite(volume) || volume <= 0) {
@@ -424,6 +507,19 @@ const TradingInterface: React.FC = () => {
     setTouchedFields(prev => new Set(prev).add(fieldName))
   }
 
+  // Helper function to format coin name for display (convert BTC-PERP to BTC-USD)
+  const formatCoinDisplayName = (coinSymbol: string): string => {
+    return coinSymbol.replace('-PERP', '-USD')
+  }
+
+  // Helper function to format numbers with thousand separators
+  const formatNumberWithCommas = (value: number, decimals: number = 2): string => {
+    return value.toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    })
+  }
+
 
   // Helper function to check if there's insufficient balance
   const hasInsufficientBalance = (): boolean => {
@@ -432,12 +528,20 @@ const TradingInterface: React.FC = () => {
     const sizeValue = parseFloat(state.size)
     if (isNaN(sizeValue) || sizeValue <= 0) return false
     
+    const limitPrice = state.orderType === 'limit' ? parseFloat(state.limitPrice || '0') : NaN
+    const fallbackPrice = typeof currentPrice === 'number' && currentPrice > 0
+      ? currentPrice
+      : (typeof topCardPrice === 'number' && topCardPrice > 0 ? topCardPrice : 0)
+    const priceForValue = state.orderType === 'limit' && !isNaN(limitPrice) && limitPrice > 0
+      ? limitPrice
+      : fallbackPrice
+
     const orderValue = state.sizeUnit === 'USD' 
       ? sizeValue  // For USD, order value is the size itself
-      : sizeValue * (currentPrice || topCardPrice || 0)  // For coin units, multiply by price
-    
+      : sizeValue * priceForValue  // For coin units, multiply by price
+
     if (state.side === 'buy') {
-      const availableBalance = parseFloat(accountInfo.availableToTrade || '0')
+      const availableBalance = accountInfo.availableToTrade ?? 0
       return orderValue > availableBalance
     }
     
@@ -491,11 +595,13 @@ const TradingInterface: React.FC = () => {
       const defaultAssetInfo = HyperliquidPrecision.getDefaultAssetInfo(state.selectedCoin)
       const szDecimals = assetPrecision.szDecimals ?? defaultAssetInfo.szDecimals
       
-      console.log(`📏 Size restrictions for ${state.selectedCoin}:`, {
+      console.log(`📏 SIZE restrictions for ${state.selectedCoin}:`, {
         szDecimals,
         defaultAssetInfo,
         assetPrecision
       })
+      console.log(`📏 SIZE - szDecimals: ${szDecimals}, pxDecimals: ${defaultAssetInfo.pxDecimals}`)
+      console.log(`📏 SIZE - Asset info found:`, defaultAssetInfo)
       
       if (szDecimals === 0) {
         return {
@@ -520,41 +626,18 @@ const TradingInterface: React.FC = () => {
     }
   }
 
-  // Generic rounding functions
-  // Detect tick size from the number of decimals in input
-  const getTick = (value: number): number => {
-    const s = value.toString()
-    if (s.includes('.')) {
-      return 1 / Math.pow(10, s.split('.')[1].length)
-    }
-    return 1
-  }
-
-
-  const roundDown = (value: number): number => {
-    const tick = getTick(value)
-    return Number((Math.floor(value / tick) * tick).toFixed(safeDecimals(tick)))
-  }
-
-  // Helper: count decimals for formatting
-  const safeDecimals = (tick: number): number => {
-    const s = tick.toString()
-    return s.includes('.') ? s.split('.')[1].length : 0
-  }
-
   // Generic coin-specific rounding function
   const roundCoinSize = (rawSize: number, baseCoin: string): number => {
     const coinKey = `${baseCoin}-PERP`
-    const precision = TradingConfigHelper.getSzDecimals(coinKey)
+    const precision = getCachedSzDecimals(coinKey)
     
     if (precision === 0) {
-      // Round to integer
-      return roundDown(rawSize)
-    } else {
-      // Round to specified decimal places
-      const multiplier = Math.pow(10, precision)
-      return roundDown(Math.round(rawSize * multiplier) / multiplier)
+      return Math.floor(rawSize)
     }
+
+      const multiplier = Math.pow(10, precision)
+    const rounded = Math.floor(rawSize * multiplier) / multiplier
+    return Number(rounded.toFixed(precision))
   }
 
   // Helper function to convert USD to coin size with Hyperliquid precision (round down)
@@ -562,10 +645,8 @@ const TradingInterface: React.FC = () => {
     const rawSize = usdAmount / coinPrice
     
     try {
-      // Get asset info for rounding
-      const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin)
-      const szDecimals = assetInfo.szDecimals
-      
+      const szDecimals = getCachedSzDecimals(coin)
+
       // Round DOWN according to coin size decimal
       let roundedSize: number
       if (szDecimals === 0) {
@@ -599,120 +680,6 @@ const TradingInterface: React.FC = () => {
       return sizeValue // Already in coin units
     }
   }
-
-  /**
-   * Calculate the liquidation price for a position
-   *
-   * @param {Object} params - Input parameters
-   * @param {number} params.entryPrice - Entry price of the asset
-   * @param {number} params.positionSize - Size of the position (contracts or units)
-   * @param {("long"|"short")} params.side - Trade direction
-   * @param {("cross"|"isolated")} params.marginType - Margin type
-   * @param {number} params.accountValue - (cross only) Total account equity
-   * @param {number} params.isolatedMargin - (isolated only) Margin allocated to this position
-   * @param {number} params.maintenanceMarginRequired - Maintenance margin required
-   * @param {number} params.maintenanceLeverage - Exchange-defined maintenance leverage
-   * @returns {number} liquidation price
-   */
-  const calculateLiquidationPrice = (params: {
-    entryPrice: number;
-    positionSize: number;
-    side: 'long' | 'short';
-    marginType: 'cross' | 'isolated';
-    accountValue?: number;
-    isolatedMargin?: number;
-    maintenanceMarginRequired: number;
-    maintenanceLeverage: number;
-  }) => {
-    const {
-      entryPrice,
-      positionSize,
-      side,
-      marginType,
-      accountValue = 0,
-      isolatedMargin = 0,
-      maintenanceMarginRequired,
-      maintenanceLeverage
-    } = params;
-
-    if (positionSize === 0) {
-      throw new Error("Position size cannot be zero.");
-    }
-
-    // Convert side string to numeric
-    const sideNum = side === "long" ? 1 : -1;
-
-    // Compute margin_available based on margin type
-    let marginAvailable: number;
-    if (marginType === "cross") {
-      marginAvailable = accountValue - maintenanceMarginRequired;
-    } else if (marginType === "isolated") {
-      marginAvailable = isolatedMargin - maintenanceMarginRequired;
-    } else {
-      throw new Error("Invalid marginType: must be 'cross' or 'isolated'");
-    }
-
-    // l = 1 / MAINTENANCE_LEVERAGE
-    const l = 1 / maintenanceLeverage;
-
-    // Formula:
-    // liq_price = price - side * (margin_available / position_size) / (1 - l * side)
-    const numerator = marginAvailable / positionSize;
-    const denominator = 1 - (l * sideNum);
-
-    if (denominator === 0) {
-      throw new Error("Invalid parameters: denominator becomes zero.");
-    }
-
-    const liquidationPrice = entryPrice - sideNum * (numerator / denominator);
-
-    return liquidationPrice;
-  }
-
-  // Helper function to convert legacy parameters to new format
-  const calculateLiquidationPriceLegacy = (
-    entryPrice: number,
-    leverage: number,
-    side: 'buy' | 'sell',
-    coin: string = 'BTC',
-    marginMode: 'isolated' | 'cross' = 'isolated',
-    _walletBalance: number = 0,
-    positionSize: number = 0,
-    accountValue: number = 0,
-    isolatedMargin: number = 0
-  ) => {
-    // Maintenance leverage ratios (1 / MAINTENANCE_LEVERAGE)
-    const maintenanceLeverages: { [key: string]: number } = {
-      'BTC': 0.004,   // 0.4% (1/250)
-      'ETH': 0.005,   // 0.5% (1/200)
-      'SOL': 0.01,    // 1% (1/100)
-      'default': 0.005
-    }
-    
-    const maintenanceLeverage = 1 / (maintenanceLeverages[coin] || maintenanceLeverages.default)
-    const sideConverted = side === 'buy' ? 'long' : 'short'
-    const marginTypeConverted = marginMode === 'isolated' ? 'isolated' : 'cross'
-    
-    // Calculate position size if not provided
-    if (positionSize === 0) {
-      const availableBalance = marginMode === 'cross' ? accountValue : isolatedMargin
-      positionSize = (availableBalance * leverage) / entryPrice
-    }
-    
-    // Calculate maintenance margin required
-    const maintenanceMarginRequired = Math.abs(positionSize) * entryPrice * (maintenanceLeverages[coin] || maintenanceLeverages.default)
-    
-    return calculateLiquidationPrice({
-      entryPrice,
-      positionSize,
-      side: sideConverted,
-      marginType: marginTypeConverted,
-      accountValue,
-      isolatedMargin,
-      maintenanceMarginRequired,
-      maintenanceLeverage
-    })
-  }
   
   // Price subscription for selected coin
   const { price: currentPrice, prices: priceMap, isConnected: priceConnected, error: priceError } = usePriceSubscription(
@@ -727,8 +694,21 @@ const TradingInterface: React.FC = () => {
         try {
           const position = await getPositionForCoin(state.selectedCoin)
           console.log(`Position for ${state.selectedCoin}:`, position)
+          
+          // Update current coin position display
+          if (position && typeof position === 'string' && position !== '0') {
+            // Position is a string like "1.23456 BTC"
+            setCurrentCoinPosition(position)
+          } else {
+            // No position for this coin
+            const coinName = state.selectedCoin.replace('-PERP', '')
+            setCurrentCoinPosition(`0.00000 ${coinName}`)
+          }
         } catch (error) {
           console.error('Failed to initialize position for selected coin:', error)
+          // Set default position for this coin
+          const coinName = state.selectedCoin.replace('-PERP', '')
+          setCurrentCoinPosition(`0.00000 ${coinName}`)
         }
       }
     }
@@ -749,14 +729,27 @@ const TradingInterface: React.FC = () => {
       })()
     : currentPrice
 
-  // Auto-update limit price with current market price when switching to limit order
+  const prevOrderTypeRef = useRef(state.orderType)
+  const prevSelectedCoinRef = useRef(state.selectedCoin)
+
+  // Auto-update limit price only when switching to limit order or changing coin
   useEffect(() => {
-    if (state.orderType === 'limit' && typeof topCardPrice === 'number') {
-      // Always update limit price when switching to limit order or when coin changes
+    const orderTypeChangedToLimit = prevOrderTypeRef.current !== 'limit' && state.orderType === 'limit'
+    const coinChanged = prevSelectedCoinRef.current !== state.selectedCoin
+
+    if (
+      state.orderType === 'limit' &&
+      (orderTypeChangedToLimit || coinChanged) &&
+      typeof topCardPrice === 'number' &&
+      !state.limitPriceManuallySet
+    ) {
       const formattedPrice = formatPriceForTickSize(topCardPrice, state.selectedCoin)
       setState(prev => ({ ...prev, limitPrice: formattedPrice }))
     }
-  }, [topCardPrice, state.orderType, state.selectedCoin])
+
+    prevOrderTypeRef.current = state.orderType
+    prevSelectedCoinRef.current = state.selectedCoin
+  }, [state.orderType, state.selectedCoin, state.limitPriceManuallySet, topCardPrice, formatPriceForTickSize, setState])
 
   // Update size unit when coin changes (if currently showing a coin unit)
   useEffect(() => {
@@ -847,7 +840,7 @@ const TradingInterface: React.FC = () => {
     updateAvailableLeverage()
   }, [state.size, state.selectedCoin, isInitialized])
 
-  // Close coin dropdown when clicking outside
+  // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement
@@ -857,13 +850,16 @@ const TradingInterface: React.FC = () => {
       if (isOrderTypeDropdownOpen && !target.closest('.order-type-dropdown-container')) {
         setIsOrderTypeDropdownOpen(false)
       }
+      if (isSizeUnitDropdownOpen && !target.closest('.size-unit-dropdown-container')) {
+        setIsSizeUnitDropdownOpen(false)
+      }
     }
 
     document.addEventListener('mousedown', handleClickOutside)
     return () => {
       document.removeEventListener('mousedown', handleClickOutside)
     }
-  }, [isCoinDropdownOpen, isOrderTypeDropdownOpen])
+  }, [isCoinDropdownOpen, isOrderTypeDropdownOpen, isSizeUnitDropdownOpen])
 
   // Fetch top coins from API
   useEffect(() => {
@@ -873,34 +869,62 @@ const TradingInterface: React.FC = () => {
         if (response.ok) {
           const data = await response.json() as { coins: TopCoin[] }
           if (Array.isArray(data.coins)) {
-            // 移除primeCacheFromCoins调用，不再使用缓存
-          setTopCoins(data.coins)
-          console.log('📊 Top coins from API:', data.coins)
+            // The upstream precision API is unstable. We currently prefer the fallback config
+            // and will revisit API-sourced decimals once we have a more reliable signal.
+            const normalizedCoins = data.coins.map(coin => {
+              const fallback = HyperliquidPrecision.getDefaultAssetInfo(coin.symbol)
+              return {
+                ...coin,
+                szDecimals: fallback.szDecimals,
+                pxDecimals: fallback.pxDecimals
+              }
+            })
+
+            HyperliquidPrecision.primeCacheFromCoins(normalizedCoins)
+            normalizedCoins.forEach(coin => {
+              recordPrecision(coin.symbol, coin.szDecimals, coin.pxDecimals)
+            })
+            setTopCoins(normalizedCoins)
+            console.log('📊 Top coins from API (fallback precision applied):', normalizedCoins)
           } else {
             console.error('❌ Top coins response missing coins array')
           }
         } else {
           console.error('❌ Failed to fetch top coins:', response.status)
-          // Fallback to hardcoded list
-          setTopCoins(CONFIG.AVAILABLE_COINS.map(coin => ({
+          const fallbackCoins = CONFIG.AVAILABLE_COINS.map(coin => {
+            const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin.symbol)
+            recordPrecision(coin.symbol, assetInfo.szDecimals, assetInfo.pxDecimals)
+            return {
             symbol: coin.symbol,
             name: coin.name,
-            maxLeverage: 10 // Default fallback
-          })))
+              maxLeverage: 10,
+              szDecimals: assetInfo.szDecimals,
+              pxDecimals: assetInfo.pxDecimals
+            }
+          })
+          HyperliquidPrecision.primeCacheFromCoins(fallbackCoins)
+          setTopCoins(fallbackCoins)
         }
       } catch (error) {
         console.error('❌ Error fetching top coins:', error)
-        // Fallback to hardcoded list
-        setTopCoins(CONFIG.AVAILABLE_COINS.map(coin => ({
+        const fallbackCoins = CONFIG.AVAILABLE_COINS.map(coin => {
+          const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin.symbol)
+          recordPrecision(coin.symbol, assetInfo.szDecimals, assetInfo.pxDecimals)
+          return {
           symbol: coin.symbol,
           name: coin.name,
-          maxLeverage: 10 // Default fallback
-        })))
+            maxLeverage: 10,
+            szDecimals: assetInfo.szDecimals,
+            pxDecimals: assetInfo.pxDecimals
+          }
+        })
+        HyperliquidPrecision.primeCacheFromCoins(fallbackCoins)
+        setTopCoins(fallbackCoins)
       }
     }
     
     fetchTopCoins()
-  }, [])
+  }, [recordPrecision])
 
   // Fetch precision metadata for the selected coin
   useEffect(() => {
@@ -926,6 +950,7 @@ const TradingInterface: React.FC = () => {
     let needsFetch = true
 
     if (topCoinEntry) {
+      recordPrecision(topCoinEntry.symbol, topCoinEntry.szDecimals, topCoinEntry.pxDecimals)
       applyPrecision(topCoinEntry.szDecimals ?? null, topCoinEntry.pxDecimals ?? null)
       needsFetch = !(
         typeof topCoinEntry.szDecimals === 'number' &&
@@ -940,6 +965,7 @@ const TradingInterface: React.FC = () => {
 
       try {
         const precision = await HyperliquidPrecision.getAssetInfo(state.selectedCoin)
+        recordPrecision(state.selectedCoin, precision.szDecimals, precision.pxDecimals)
         applyPrecision(precision.szDecimals ?? null, precision.pxDecimals ?? null)
       } catch (error) {
         console.error('Failed to load asset precision for', state.selectedCoin, error)
@@ -954,29 +980,13 @@ const TradingInterface: React.FC = () => {
     return () => {
       isMounted = false
     }
-  }, [state.selectedCoin, topCoins])
+  }, [state.selectedCoin, topCoins, recordPrecision])
 
-  // Auto-calculate TP/SL prices when enabled
-  useEffect(() => {
-    if (state.takeProfitStopLoss && typeof topCardPrice === 'number') {
-      const gainPercent = parseFloat(state.takeProfitGain) / 100
-      const lossPercent = parseFloat(state.stopLossLoss) / 100
-      
-      setState(prev => {
-        const newState = { ...prev }
-        
-        if (prev.side === 'buy') {
-          newState.takeProfitPrice = (topCardPrice * (1 + gainPercent)).toFixed(2)
-          newState.stopLossPrice = (topCardPrice * (1 - lossPercent)).toFixed(2)
-        } else {
-          newState.takeProfitPrice = (topCardPrice * (1 - gainPercent)).toFixed(2)
-          newState.stopLossPrice = (topCardPrice * (1 + lossPercent)).toFixed(2)
-        }
-        
-        return newState
-      })
-    }
-  }, [state.takeProfitStopLoss, topCardPrice, state.side, state.takeProfitGain, state.stopLossLoss])
+  // Note: Auto-calculation is now handled in individual handlers to avoid infinite loops
+  // The bidirectional updates are handled in:
+  // - handleTPSLChange (gain/loss -> prices)
+  // - handleTakeProfitPriceChange (price -> gain)
+  // - handleStopLossPriceChange (price -> loss)
 
   // Real-time validation
   useEffect(() => {
@@ -1012,10 +1022,17 @@ const TradingInterface: React.FC = () => {
       
       if (errors.length === 0) {
         // 3. Check minimum order value
+        const limitPrice = state.orderType === 'limit' ? parseFloat(state.limitPrice || '0') : NaN
+        const fallbackPrice = typeof currentPrice === 'number' && currentPrice > 0
+          ? currentPrice
+          : (typeof topCardPrice === 'number' && topCardPrice > 0 ? topCardPrice : 0)
+        const priceForValue = state.orderType === 'limit' && !isNaN(limitPrice) && limitPrice > 0
+          ? limitPrice
+          : fallbackPrice
         const orderValue = state.sizeUnit === 'USD' 
           ? sizeValue  // For USD, order value is the size itself
-          : sizeValue * (currentPrice || 0)  // For coin units, multiply by price
-        
+          : sizeValue * priceForValue  // For coin units, multiply by price
+
         if (orderValue > 0 && !TradingConfigHelper.validateOrderValue(orderValue)) {
           errors.push(`Minimum order value is $${TradingConfigHelper.getMinOrderValueUsd()} USD`)
         }
@@ -1031,7 +1048,7 @@ const TradingInterface: React.FC = () => {
           
           // Reduce-only validation for buy orders
           if (state.reduceOnly) {
-            const positionMatch = accountInfo.currentPosition.match(/(\d+\.?\d*)\s+(\w+)/)
+            const positionMatch = currentCoinPosition.match(/(\d+\.?\d*)\s+(\w+)/)
             if (positionMatch) {
               const availablePosition = parseFloat(positionMatch[1])
               if (availablePosition >= 0) {
@@ -1045,8 +1062,8 @@ const TradingInterface: React.FC = () => {
           }
         } else {
           // For sell orders, check position and margin requirements
-          const availableBalance = parseFloat(accountInfo.availableToTrade || '0')
-          const positionMatch = accountInfo.currentPosition.match(/(\d+\.?\d*)\s+(\w+)/)
+          const availableBalance = accountInfo.availableToTrade || 0
+          const positionMatch = currentCoinPosition.match(/(\d+\.?\d*)\s+(\w+)/)
           
           if (positionMatch) {
             const availablePosition = parseFloat(positionMatch[1])
@@ -1073,7 +1090,7 @@ const TradingInterface: React.FC = () => {
               const requiredMargin = shortValue / state.leverage
               
               if (requiredMargin > availableBalance) {
-                errors.push(`Insufficient margin for short sell. Required margin: $${requiredMargin.toFixed(2)}, Available: $${availableBalance.toFixed(2)}`)
+                errors.push(`Insufficient margin for short sell. Required margin: $${formatNumberWithCommas(requiredMargin)}, Available: $${formatNumberWithCommas(availableBalance)}`)
               }
               
               // Additional short sell validations
@@ -1096,7 +1113,7 @@ const TradingInterface: React.FC = () => {
             }
             
             if (requiredMargin > availableBalance) {
-              errors.push(`Insufficient margin for short sell. Required margin: $${requiredMargin.toFixed(2)}, Available: $${availableBalance.toFixed(2)}`)
+              errors.push(`Insufficient margin for short sell. Required margin: $${formatNumberWithCommas(requiredMargin)}, Available: $${formatNumberWithCommas(availableBalance)}`)
             }
             
             // Additional short sell validations
@@ -1252,14 +1269,14 @@ const TradingInterface: React.FC = () => {
               // For USD mode, each sub-order gets equal USD value
               const subOrderUsdValue = totalSize / orderCount
               if (!TradingConfigHelper.validateOrderValue(subOrderUsdValue, true)) {
-                errors.push(`Scale sub-order value too low: $${subOrderUsdValue.toFixed(2)} (minimum: $10.00)`)
+                errors.push(`Scale sub-order value too low: $${formatNumberWithCommas(subOrderUsdValue)} (minimum: $10.00)`)
               }
             } else {
               // For coin mode, calculate USD value using average price
               const subOrderSize = totalSize / orderCount
               const subOrderUsdValue = subOrderSize * avgPrice
               if (!TradingConfigHelper.validateOrderValue(subOrderUsdValue, true)) {
-                errors.push(`Scale sub-order value too low: $${subOrderUsdValue.toFixed(2)} (minimum: $10.00)`)
+                errors.push(`Scale sub-order value too low: $${formatNumberWithCommas(subOrderUsdValue)} (minimum: $10.00)`)
               }
             }
           }
@@ -1338,7 +1355,7 @@ const TradingInterface: React.FC = () => {
                 : roundedSubOrderSize * (currentPrice || 0)  // Coin mode: recalculate with rounded size
               
               if (!TradingConfigHelper.validateOrderValue(roundedSubOrderUsdValue, true)) {
-                errors.push(`TWAP sub-order value too low: $${roundedSubOrderUsdValue.toFixed(2)} (minimum: $10.00)`)
+                errors.push(`TWAP sub-order value too low: $${formatNumberWithCommas(roundedSubOrderUsdValue)} (minimum: $10.00)`)
               }
             }
           }
@@ -1381,7 +1398,7 @@ const TradingInterface: React.FC = () => {
                 } else {
                   const subOrderUsdValue = totalUsdValue / numberOfOrders
                   if (!TradingConfigHelper.validateOrderValue(subOrderUsdValue, true)) {
-                    errors.push(`Each TWAP sub-order must be at least $10. Current plan is $${subOrderUsdValue.toFixed(2)}.`)
+                    errors.push(`Each TWAP sub-order must be at least $10. Current plan is $${formatNumberWithCommas(subOrderUsdValue)}.`)
                   }
 
                   const coinMinSize = TradingConfigHelper.getMinOrderSize(state.selectedCoin)
@@ -1399,7 +1416,9 @@ const TradingInterface: React.FC = () => {
 
                     if (subOrderCoinSize !== null && subOrderCoinSize < coinMinSize) {
                       const coinLabel = state.selectedCoin?.replace('-PERP', '') || 'asset'
-                      errors.push(`Each TWAP sub-order must be at least ${coinMinSize} ${coinLabel}. Current plan is ${subOrderCoinSize.toFixed(4)} ${coinLabel}.`)
+                      const formattedMin = formatSizeWithPrecision(coinMinSize, state.selectedCoin)
+                      const formattedSub = formatSizeWithPrecision(subOrderCoinSize, state.selectedCoin)
+                      errors.push(`Each TWAP sub-order must be at least ${formattedMin} ${coinLabel}. Current plan is ${formattedSub} ${coinLabel}.`)
                     }
                   }
                 }
@@ -1520,12 +1539,18 @@ const TradingInterface: React.FC = () => {
         }
         
         // Minimum margin requirements based on leverage
-        const minMargin = TradingConfigHelper.getMinMarginRequirement(state.leverage)
-        if (minMargin > 0 && requiredMargin < minMargin) {
-          errors.push(`Minimum margin required for ${state.leverage}x+ leverage is $${minMargin}`)
-        }
-        if (state.leverage >= 40 && requiredMargin < 500) {
-          errors.push('Minimum margin required for 40x+ leverage is $500')
+        const enforceMinMargin = TradingConfigHelper.isMinMarginEnforcementEnabled
+          ? TradingConfigHelper.isMinMarginEnforcementEnabled()
+          : true
+
+        if (enforceMinMargin) {
+          const minMargin = TradingConfigHelper.getMinMarginRequirement(state.leverage)
+          if (minMargin > 0 && requiredMargin < minMargin) {
+            errors.push(`Minimum margin required for ${state.leverage}x+ leverage is $${minMargin}`)
+          }
+          if (state.leverage >= 40 && requiredMargin < 500) {
+            errors.push('Minimum margin required for 40x+ leverage is $500')
+          }
         }
       }
     }
@@ -1562,16 +1587,21 @@ const TradingInterface: React.FC = () => {
     }
 
     setValidationErrors(errors)
-  }, [state, currentPrice, accountInfo, touchedFields, topCardPrice])
+  }, [state, currentPrice, accountInfo, touchedFields, topCardPrice, currentCoinPosition])
   
 
-  const handleSizeChange = (value: string, inputEl?: HTMLInputElement) => {
-  // Normalize input: trim spaces, allow only numbers and decimal point
-  let normalizedValue = value.trim().replace(/[^0-9.]/g, '')
-  normalizedValue = normalizeLeadingZeros(normalizedValue)
 
-  const restrictions = getSizeInputRestrictions()
+const handleSizeChange = (value: string, inputEl?: HTMLInputElement) => {
+    console.log(`📏 SIZE Change - Input: "${value}"`)
+    // Normalize input: trim spaces, allow only numbers and decimal point
+    let normalizedValue = value.trim().replace(/[^0-9.]/g, '')
+  normalizedValue = normalizeLeadingZeros(normalizedValue)
+  console.log(`📏 SIZE Change - After normalization: "${normalizedValue}"`)
+    
+    const restrictions = getSizeInputRestrictions()
   const decimalLimit = restrictions.szDecimals
+  console.log(`📏 SIZE Change - Restrictions:`, restrictions)
+  console.log(`📏 SIZE Change - Decimal limit: ${decimalLimit}`)
 
   if (!isValidDecimalInsertion(normalizedValue, state.size || '', decimalLimit)) {
     return
@@ -1581,224 +1611,104 @@ const TradingInterface: React.FC = () => {
   if (enforcedValue === null) {
     return
   }
-  normalizedValue = enforcedValue
+  normalizedValue = normalizeLeadingZeros(enforcedValue)
 
   if (state.sizeUnit === 'USD') {
-    const parts = normalizedValue.split('.')
+      const parts = normalizedValue.split('.')
     if (parts.length > 2) {
       return
     }
 
-    if (parts.length > 1) {
-      parts[1] = parts[1].substring(0, 2)
-      normalizedValue = `${parts[0]}.${parts[1]}`
-    }
-
+      if (parts.length > 1) {
+        parts[1] = parts[1].substring(0, 2)
+      normalizedValue = normalizeLeadingZeros(`${parts[0]}.${parts[1]}`)
+      }
+      
     markFieldAsTouched('size')
     setState(prev => ({ ...prev, size: normalizedValue }))
-    return
-  }
-
+      return
+    }
+    
   if (decimalLimit !== null) {
     if (decimalLimit === 0) {
-      normalizedValue = normalizedValue.replace(/\./g, '')
-    } else {
-      const parts = normalizedValue.split('.')
+      normalizedValue = normalizeLeadingZeros(normalizedValue.replace(/\./g, ''))
+      } else {
+        const parts = normalizedValue.split('.')
       if (parts.length > 2) {
         return
       }
 
-      if (parts.length > 1) {
+        if (parts.length > 1) {
         parts[1] = parts[1].substring(0, decimalLimit)
-        normalizedValue = parts.join('.')
+        normalizedValue = normalizeLeadingZeros(parts.join('.'))
       }
     }
   }
-
-  markFieldAsTouched('size')
-  setState(prev => ({ ...prev, size: normalizedValue }))
-}
-
-
-
-
-
-
-
-
-
-  const handleLimitPriceChange = (value: string, inputEl?: HTMLInputElement) => {
-  // Normalize input: trim spaces, only allow numeric input (including decimal point)
-  const trimmedValue = value.trim()
-  let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
-  numericValue = normalizeLeadingZeros(numericValue)
-
-  // Get price precision for the selected coin
-  let maxDecimals: number | null = null
-  try {
-    const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(state.selectedCoin)
-    maxDecimals = assetInfo.pxDecimals
-    console.log(`🔍 Limit price precision for ${state.selectedCoin}: ${maxDecimals} decimals`)
-    console.log(`🔍 Asset info for ${state.selectedCoin}:`, assetInfo)
-  } catch (error) {
-    console.error('Error getting price precision for limit price:', error)
-    // Fallback to default precision
-    maxDecimals = 4
+    
+    markFieldAsTouched('size')
+    setState(prev => ({ ...prev, size: normalizedValue }))
   }
 
-  if (!isValidDecimalInsertion(numericValue, state.limitPrice || '', maxDecimals)) {
-    moveCursorToEnd(inputEl)
+const handleLimitPriceChange = (value: string, inputEl?: HTMLInputElement) => {
+    console.log(`💰 LIMIT PRICE Change - Input: "${value}"`)
+    // Normalize input: trim spaces, only allow numeric input (including decimal point)
+    const trimmedValue = value.trim()
+    let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
+  numericValue = normalizeLeadingZeros(numericValue)
+  console.log(`💰 LIMIT PRICE Change - After normalization: "${numericValue}"`)
+
+  console.log(`💰 LIMIT PRICE Change - Before validation: "${numericValue}"`)
+  if (!isValidDecimalInsertion(numericValue, state.limitPrice || '', undefined)) {
+    console.log(`💰 LIMIT PRICE Change - Validation failed, returning early`)
     return
   }
+  console.log(`💰 LIMIT PRICE Change - Validation passed`)
 
   const enforcedValue = enforceMaxDigits(numericValue, state.limitPrice || '', inputEl)
   if (enforcedValue === null) {
     return
   }
-  numericValue = enforcedValue
+  const normalizedEnforced = normalizeLeadingZeros(enforcedValue)
 
-  // Apply price precision limits
-  const parts = numericValue.split('.')
+  const parts = normalizedEnforced.split('.')
   if (parts.length > 2) {
-    moveCursorToEnd(inputEl)
     return
   }
-
-  // Limit decimal places according to price precision
-  if (parts.length === 2 && maxDecimals !== null) {
-    const decimalPart = parts[1]
-    if (decimalPart.length > maxDecimals) {
-      parts[1] = decimalPart.substring(0, maxDecimals)
-      numericValue = parts.join('.')
-      // Move cursor to end after truncating
-      moveCursorToEnd(inputEl)
-    }
-  }
-
-  markFieldAsTouched('limitPrice')
-  setState(prev => ({ ...prev, limitPrice: numericValue }))
+    
+    markFieldAsTouched('limitPrice')
+  setState(prev => ({ ...prev, limitPrice: normalizedEnforced }))
 }
 
-
-
-
-
-  const handleLimitPriceBlur = () => {
-    // Format price according to Hyperliquid precision requirements when user finishes editing
-    if (state.limitPrice && !isNaN(parseFloat(state.limitPrice))) {
-      const price = parseFloat(state.limitPrice)
-      
-      // Check if the price is valid according to Hyperliquid rules
-      if (!validateHyperliquidPriceSync(price, state.selectedCoin)) {
-        // Don't format if it's invalid - let user see the warning
-        return
-      }
-      
-      try {
-        const formattedPrice = formatHyperliquidPriceSync(price, state.selectedCoin)
-        setState(prev => ({ ...prev, limitPrice: formattedPrice }))
-      } catch (error) {
-        console.error('Error formatting limit price:', error)
-        // Fallback to original formatting
-        const formattedPrice = formatPriceForTickSize(price, state.selectedCoin)
-        setState(prev => ({ ...prev, limitPrice: formattedPrice }))
-      }
-    }
-  }
-
-  // Scale order start price handlers
-
-  const handleScaleStartPriceChange = (value: string, inputEl?: HTMLInputElement) => {
+const handleScaleStartPriceChange = (value: string, inputEl?: HTMLInputElement) => {
   const trimmedValue = value.trim()
   let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
   numericValue = normalizeLeadingZeros(numericValue)
 
-  // Get price precision for the selected coin
-  let maxDecimals: number | null = null
-  try {
-    const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(state.selectedCoin)
-    maxDecimals = assetInfo.pxDecimals
-  } catch (error) {
-    console.error('Error getting price precision for scale start price:', error)
-    maxDecimals = 4
-  }
-
-  if (!isValidDecimalInsertion(numericValue, state.scaleStartPrice || '', maxDecimals)) {
-    moveCursorToEnd(inputEl)
-    return
-  }
-
+  if (!isValidDecimalInsertion(numericValue, state.scaleStartPrice || '', undefined)) {
+        return
+      }
+      
   const enforcedValue = enforceMaxDigits(numericValue, state.scaleStartPrice || '', inputEl)
   if (enforcedValue === null) {
     return
   }
-  numericValue = enforcedValue
+  numericValue = normalizeLeadingZeros(enforcedValue)
 
-  // Apply price precision limits
   const parts = numericValue.split('.')
   if (parts.length > 2) {
-    moveCursorToEnd(inputEl)
     return
-  }
-
-  // Limit decimal places according to price precision
-  if (parts.length === 2 && maxDecimals !== null) {
-    const decimalPart = parts[1]
-    if (decimalPart.length > maxDecimals) {
-      parts[1] = decimalPart.substring(0, maxDecimals)
-      numericValue = parts.join('.')
-    }
   }
 
   markFieldAsTouched('scaleStartPrice')
   setState(prev => ({ ...prev, scaleStartPrice: numericValue }))
 }
 
-
-
-
-  const handleScaleStartPriceBlur = () => {
-    // Format price according to Hyperliquid precision requirements when user finishes editing
-    if (state.scaleStartPrice && !isNaN(parseFloat(state.scaleStartPrice))) {
-      const price = parseFloat(state.scaleStartPrice)
-      
-      // Check if the price is valid according to Hyperliquid rules
-      if (!validateHyperliquidPriceSync(price, state.selectedCoin)) {
-        // Don't format if it's invalid - let user see the warning
-        return
-      }
-      
-      try {
-        const formattedPrice = formatHyperliquidPriceSync(price, state.selectedCoin)
-        setState(prev => ({ ...prev, scaleStartPrice: formattedPrice }))
-      } catch (error) {
-        console.error('Error formatting scale start price:', error)
-        // Fallback to original formatting
-        const formattedPrice = formatPriceForTickSize(price, state.selectedCoin)
-        setState(prev => ({ ...prev, scaleStartPrice: formattedPrice }))
-      }
-    }
-  }
-
-  // Scale order end price handlers
-
-  const handleScaleEndPriceChange = (value: string, inputEl?: HTMLInputElement) => {
-  const trimmedValue = value.trim()
-  let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
+const handleScaleEndPriceChange = (value: string, inputEl?: HTMLInputElement) => {
+    const trimmedValue = value.trim()
+    let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
   numericValue = normalizeLeadingZeros(numericValue)
 
-  // Get price precision for the selected coin
-  let maxDecimals: number | null = null
-  try {
-    const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(state.selectedCoin)
-    maxDecimals = assetInfo.pxDecimals
-  } catch (error) {
-    console.error('Error getting price precision for scale end price:', error)
-    maxDecimals = 4
-  }
-
-  if (!isValidDecimalInsertion(numericValue, state.scaleEndPrice || '', maxDecimals)) {
-    moveCursorToEnd(inputEl)
+  if (!isValidDecimalInsertion(numericValue, state.scaleEndPrice || '', undefined)) {
     return
   }
 
@@ -1806,70 +1716,32 @@ const TradingInterface: React.FC = () => {
   if (enforcedValue === null) {
     return
   }
-  numericValue = enforcedValue
+  numericValue = normalizeLeadingZeros(enforcedValue)
 
-  // Apply price precision limits
-  const parts = numericValue.split('.')
+    const parts = numericValue.split('.')
   if (parts.length > 2) {
-    moveCursorToEnd(inputEl)
     return
-  }
-
-  // Limit decimal places according to price precision
-  if (parts.length === 2 && maxDecimals !== null) {
-    const decimalPart = parts[1]
-    if (decimalPart.length > maxDecimals) {
-      parts[1] = decimalPart.substring(0, maxDecimals)
-      numericValue = parts.join('.')
-    }
   }
 
   markFieldAsTouched('scaleEndPrice')
   setState(prev => ({ ...prev, scaleEndPrice: numericValue }))
 }
 
-
-
-
-  const handleScaleEndPriceBlur = () => {
-    // Format price according to Hyperliquid precision requirements when user finishes editing
-    if (state.scaleEndPrice && !isNaN(parseFloat(state.scaleEndPrice))) {
-      const price = parseFloat(state.scaleEndPrice)
-      
-      // Check if the price is valid according to Hyperliquid rules
-      if (!validateHyperliquidPriceSync(price, state.selectedCoin)) {
-        // Don't format if it's invalid - let user see the warning
-        return
-      }
-      
-      try {
-        const formattedPrice = formatHyperliquidPriceSync(price, state.selectedCoin)
-        setState(prev => ({ ...prev, scaleEndPrice: formattedPrice }))
-      } catch (error) {
-        console.error('Error formatting scale end price:', error)
-        // Fallback to original formatting
-        const formattedPrice = formatPriceForTickSize(price, state.selectedCoin)
-        setState(prev => ({ ...prev, scaleEndPrice: formattedPrice }))
-      }
-    }
-  }
-
-
-
-  const handleScaleOrderCountChange = (value: string, inputEl?: HTMLInputElement) => {
+const handleScaleOrderCountChange = (value: string, inputEl?: HTMLInputElement) => {
   const sanitizedValue = value.trim().replace(/[^0-9]/g, '')
   const normalizedValue = normalizeLeadingZeros(sanitizedValue)
 
   const enforcedValue = enforceMaxDigits(normalizedValue, state.scaleOrderCount || '', inputEl)
   if (enforcedValue === null) {
-    return
-  }
+        return
+      }
+  const normalizedEnforced = normalizeLeadingZeros(enforcedValue)
 
   markFieldAsTouched('scaleOrderCount')
-  setState(prev => ({ ...prev, scaleOrderCount: enforcedValue }))
+  setState(prev => ({ ...prev, scaleOrderCount: normalizedEnforced }))
 }
 
-  const handleSizeSkewChange = (value: string, inputEl?: HTMLInputElement) => {
+const handleSizeSkewChange = (value: string, inputEl?: HTMLInputElement) => {
   const trimmedValue = value.trim().replace(/[^0-9.]/g, '')
   let numericValue = normalizeLeadingZeros(trimmedValue)
 
@@ -1877,233 +1749,312 @@ const TradingInterface: React.FC = () => {
     return
   }
 
-  const parts = numericValue.split('.')
+    const parts = numericValue.split('.')
   if (parts.length > 2) {
     return
   }
 
   if (parts.length > 1) {
     parts[1] = parts[1].substring(0, 2)
-    numericValue = parts.join('.')
+    numericValue = normalizeLeadingZeros(parts.join('.'))
   }
 
   const numericValueFloat = parseFloat(numericValue)
   if (!isNaN(numericValueFloat) && numericValueFloat > 100) {
     setState(prev => ({ ...prev, scaleSizeSkew: '100.00' }))
-    return
-  }
-
+        return
+      }
+      
   const enforcedValue = enforceMaxDigits(numericValue, state.scaleSizeSkew || '', inputEl)
   if (enforcedValue === null) {
     return
   }
 
+  const normalizedEnforced = normalizeLeadingZeros(enforcedValue)
+
   markFieldAsTouched('scaleSizeSkew')
-  setState(prev => ({ ...prev, scaleSizeSkew: enforcedValue }))
+  setState(prev => ({ ...prev, scaleSizeSkew: normalizedEnforced }))
 }
 
-
-
-  const handleTwapNumericChange = (field: 'twapRunningTimeHours' | 'twapRunningTimeMinutes' | 'twapNumberOfIntervals' | 'twapPriceOffset', value: string, inputEl?: HTMLInputElement) => {
+const handleTwapNumericChange = (field: 'twapRunningTimeHours' | 'twapRunningTimeMinutes' | 'twapNumberOfIntervals' | 'twapPriceOffset', value: string, inputEl?: HTMLInputElement) => {
     // Normalize input: trim spaces, only allow numeric input (including decimal point)
     const trimmedValue = value.trim()
     let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
+  numericValue = normalizeLeadingZeros(numericValue)
+    
+  const previousValue = String((state as unknown as Record<string, string | undefined>)[field] ?? '')
+
+    if (field === 'twapRunningTimeHours' || field === 'twapRunningTimeMinutes') {
+      numericValue = numericValue.replace(/\./g, '')
     numericValue = normalizeLeadingZeros(numericValue)
-
-    const previousValue = String((state as unknown as Record<string, string | undefined>)[field] ?? '')
-
-  if (field === 'twapRunningTimeHours' || field === 'twapRunningTimeMinutes') {
-    numericValue = numericValue.replace(/\./g, '')
-  } else {
+    } else {
     if (!isValidDecimalInsertion(numericValue, previousValue, undefined)) {
       return
     }
 
-    const parts = numericValue.split('.')
+      const parts = numericValue.split('.')
     if (parts.length > 2) {
       return
     }
   }
 
-  numericValue = normalizeLeadingZeros(numericValue)
-
   const enforcedValue = enforceMaxDigits(numericValue, previousValue || '', inputEl)
   if (enforcedValue === null) {
     return
   }
-  numericValue = enforcedValue
+  numericValue = normalizeLeadingZeros(enforcedValue)
 
-  if (field === 'twapRunningTimeHours' || field === 'twapRunningTimeMinutes') {
-    markFieldAsTouched('twapRunningTime')
-  } else {
-    markFieldAsTouched(field)
+    if (field === 'twapRunningTimeHours' || field === 'twapRunningTimeMinutes') {
+      markFieldAsTouched('twapRunningTime')
+    } else {
+      markFieldAsTouched(field)
+    }
+    
+    setState(prev => ({ ...prev, [field]: numericValue }))
   }
 
-  setState(prev => ({ ...prev, [field]: numericValue }))
-}
-
-
-
-
-
-
-
-
-  const handleTPSLChange = (field: 'takeProfitPrice' | 'stopLossPrice' | 'takeProfitGain' | 'stopLossLoss', value: string, inputEl?: HTMLInputElement) => {
+const handleTPSLChange = (field: 'takeProfitPrice' | 'stopLossPrice' | 'takeProfitGain' | 'stopLossLoss', value: string, inputEl?: HTMLInputElement) => {
     // Normalize input: trim spaces, only allow numeric input (including decimal point)
     const trimmedValue = value.trim()
-    let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
-    numericValue = normalizeLeadingZeros(numericValue)
+  let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
+  numericValue = normalizeLeadingZeros(numericValue)
 
-    const previousValue = String((state as unknown as Record<string, string | undefined>)[field] ?? '')
+  const previousValue = String((state as unknown as Record<string, string | undefined>)[field] ?? '')
 
-  if (!isValidDecimalInsertion(numericValue, previousValue, undefined)) {
-    return
+  // Set max decimals based on field type
+  let maxDecimals: number | null = null
+  if (field === 'takeProfitGain' || field === 'stopLossLoss') {
+    maxDecimals = 2 // Limit gain/loss to 2 decimal places
+  } else if (field === 'takeProfitPrice' || field === 'stopLossPrice') {
+    // Use coin's price decimal precision for TP/SL prices
+    try {
+      const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(state.selectedCoin)
+      maxDecimals = assetInfo.pxDecimals
+      console.log(`🔍 TP/SL price precision for ${state.selectedCoin}: ${maxDecimals} decimals`)
+    } catch (error) {
+      console.error('Error getting price precision for TP/SL price:', error)
+      maxDecimals = 4
+    }
   }
 
-  numericValue = normalizeLeadingZeros(numericValue)
+  if (!isValidDecimalInsertion(numericValue, previousValue, maxDecimals)) {
+    moveCursorToEnd(inputEl)
+    return
+  }
 
   const enforcedValue = enforceMaxDigits(numericValue, previousValue || '', inputEl)
   if (enforcedValue === null) {
     return
   }
-  numericValue = enforcedValue
+  numericValue = normalizeLeadingZeros(enforcedValue)
 
-  const parts = numericValue.split('.')
+    const parts = numericValue.split('.')
   if (parts.length > 2) {
+    moveCursorToEnd(inputEl)
     return
   }
 
-  markFieldAsTouched(field)
-
-  setState(prev => {
+  // Limit decimal places based on field type
+  if (parts.length === 2) {
+    const decimalPart = parts[1]
+    if (maxDecimals !== null && decimalPart.length > maxDecimals) {
+      parts[1] = decimalPart.substring(0, maxDecimals)
+      numericValue = parts.join('.')
+      moveCursorToEnd(inputEl)
+    }
+  }
+    
+    markFieldAsTouched(field)
+    
+    setState(prev => {
     const newState = { ...prev, [field]: numericValue }
 
     if (typeof topCardPrice === 'number' && numericValue) {
       if (field === 'takeProfitGain') {
         const gainPercent = parseFloat(numericValue) / 100
         if (!isNaN(gainPercent)) {
-          newState.takeProfitPrice = (topCardPrice * (prev.side === 'buy' ? 1 + gainPercent : 1 - gainPercent)).toFixed(2)
+          newState.takeProfitPrice = formatPriceWithPrecision(topCardPrice * (prev.side === 'buy' ? 1 + gainPercent : 1 - gainPercent), state.selectedCoin)
         }
       } else if (field === 'stopLossLoss') {
         const lossPercent = parseFloat(numericValue) / 100
         if (!isNaN(lossPercent)) {
-          newState.stopLossPrice = (topCardPrice * (prev.side === 'buy' ? 1 - lossPercent : 1 + lossPercent)).toFixed(2)
+          newState.stopLossPrice = formatPriceWithPrecision(topCardPrice * (prev.side === 'buy' ? 1 - lossPercent : 1 + lossPercent), state.selectedCoin)
+          }
         }
       }
-    }
+      
+      return newState
+    })
+  }
 
+const handleTakeProfitPriceChange = (value: string, inputEl?: HTMLInputElement) => {
+    console.log(`🔍 TP Price Change - Input: "${value}"`)
+    const trimmedValue = value.trim()
+    let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
+  numericValue = normalizeLeadingZeros(numericValue)
+  console.log(`🔍 TP Price Change - After normalization: "${numericValue}"`)
+
+  // Get price decimal precision
+  let maxDecimals: number | null = null
+  try {
+    const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(state.selectedCoin)
+    maxDecimals = assetInfo.pxDecimals
+    console.log(`🔍 TP PRICE precision for ${state.selectedCoin}: ${maxDecimals} decimals`)
+    console.log(`🔍 TP PRICE Asset info:`, assetInfo)
+    console.log(`🔍 TP PRICE - szDecimals: ${assetInfo.szDecimals}, pxDecimals: ${assetInfo.pxDecimals}`)
+  } catch (error) {
+    console.error('Error getting PRICE precision for TP price:', error)
+    maxDecimals = 4
+  }
+
+  console.log(`🔍 TP Price Change - Before validation: "${numericValue}", maxDecimals: ${maxDecimals}`)
+  if (!isValidDecimalInsertion(numericValue, state.takeProfitPrice || '', maxDecimals)) {
+    console.log(`🔍 TP Price Change - Validation failed, returning early`)
+    moveCursorToEnd(inputEl)
+    return
+  }
+  console.log(`🔍 TP Price Change - Validation passed`)
+
+      const enforcedValue = enforceMaxDigits(numericValue, state.takeProfitPrice || '', inputEl)
+  console.log(`🔍 TP Price Change - After enforceMaxDigits: "${enforcedValue}"`)
+  if (enforcedValue === null) {
+    console.log(`🔍 TP Price Change - enforceMaxDigits returned null, returning early`)
+    return
+  }
+
+  const normalizedEnforced = normalizeLeadingZeros(enforcedValue)
+
+  const parts = normalizedEnforced.split('.')
+  if (parts.length > 2) {
+    moveCursorToEnd(inputEl)
+    return
+  }
+
+  // Apply Hyperliquid precision formatting when user finishes typing
+  // BUT only if the input is complete (not during typing)
+  let formattedValue = normalizedEnforced
+  if (normalizedEnforced && parseFloat(normalizedEnforced) > 0 && !normalizedEnforced.endsWith('.')) {
+    try {
+      // Use Hyperliquid precision formatting only for complete numbers
+      formattedValue = formatPriceWithPrecision(parseFloat(normalizedEnforced), state.selectedCoin)
+      console.log(`🔧 TP price formatted: ${normalizedEnforced} -> ${formattedValue}`)
+    } catch (error) {
+      console.warn('Failed to format TP price with precision, using original:', error)
+      formattedValue = normalizedEnforced
+    }
+  }
+
+  // Limit decimal places according to price precision
+  if (parts.length === 2 && maxDecimals !== null) {
+    const decimalPart = parts[1]
+    if (decimalPart.length > maxDecimals) {
+      parts[1] = decimalPart.substring(0, maxDecimals)
+      const truncatedValue = parts.join('.')
+      moveCursorToEnd(inputEl)
+      setState(prev => {
+        const newState = { ...prev, takeProfitPrice: truncatedValue }
+        
+        // Calculate corresponding gain percentage when TP price is updated
+        if (typeof topCardPrice === 'number' && truncatedValue && parseFloat(truncatedValue) > 0) {
+          const tpPrice = parseFloat(truncatedValue)
+          let gainPercent: number
+          
+          if (prev.side === 'buy') {
+            gainPercent = ((tpPrice - topCardPrice) / topCardPrice) * 100
+          } else {
+            gainPercent = ((topCardPrice - tpPrice) / topCardPrice) * 100
+          }
+          
+          if (!isNaN(gainPercent)) {
+            newState.takeProfitGain = gainPercent.toFixed(2)
+          }
+        }
+        
+        return newState
+      })
+        return
+    }
+  }
+    
+    markFieldAsTouched('takeProfitPrice')
+  setState(prev => {
+    const newState = { ...prev, takeProfitPrice: formattedValue }
+    
+    // Calculate corresponding gain percentage when TP price is updated
+    if (typeof topCardPrice === 'number' && formattedValue && parseFloat(formattedValue) > 0) {
+      const tpPrice = parseFloat(formattedValue)
+      let gainPercent: number
+      
+      if (prev.side === 'buy') {
+        gainPercent = ((tpPrice - topCardPrice) / topCardPrice) * 100
+      } else {
+        gainPercent = ((topCardPrice - tpPrice) / topCardPrice) * 100
+      }
+      
+      if (!isNaN(gainPercent)) {
+        newState.takeProfitGain = gainPercent.toFixed(2)
+      }
+    }
+    
     return newState
   })
 }
 
-
-
-
-
-  // Take Profit Price handlers with pxDecimals formatting
-
-  const handleTakeProfitPriceChange = (value: string, inputEl?: HTMLInputElement) => {
-  const trimmedValue = value.trim()
-  let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
+const handleStopLossPriceChange = (value: string, inputEl?: HTMLInputElement) => {
+    console.log(`🔍 SL Price Change - Input: "${value}"`)
+    const trimmedValue = value.trim()
+    let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
   numericValue = normalizeLeadingZeros(numericValue)
+  console.log(`🔍 SL Price Change - After normalization: "${numericValue}"`)
 
-  // Get price precision for the selected coin
+  // Get price decimal precision
   let maxDecimals: number | null = null
   try {
     const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(state.selectedCoin)
     maxDecimals = assetInfo.pxDecimals
+    console.log(`🔍 SL PRICE precision for ${state.selectedCoin}: ${maxDecimals} decimals`)
+    console.log(`🔍 SL PRICE Asset info:`, assetInfo)
+    console.log(`🔍 SL PRICE - szDecimals: ${assetInfo.szDecimals}, pxDecimals: ${assetInfo.pxDecimals}`)
   } catch (error) {
-    console.error('Error getting price precision for take profit price:', error)
+    console.error('Error getting PRICE precision for SL price:', error)
     maxDecimals = 4
   }
 
-  if (!isValidDecimalInsertion(numericValue, state.takeProfitPrice || '', maxDecimals)) {
-    moveCursorToEnd(inputEl)
-    return
-  }
-
-  const parts = numericValue.split('.')
-  if (parts.length > 2) {
-    moveCursorToEnd(inputEl)
-    return
-  }
-
-  // Limit decimal places according to price precision
-  if (parts.length === 2 && maxDecimals !== null) {
-    const decimalPart = parts[1]
-    if (decimalPart.length > maxDecimals) {
-      parts[1] = decimalPart.substring(0, maxDecimals)
-      numericValue = parts.join('.')
-    }
-  }
-
-  const enforcedValue = enforceMaxDigits(numericValue, state.takeProfitPrice || '', inputEl)
-  if (enforcedValue === null) {
-    return
-  }
-
-  markFieldAsTouched('takeProfitPrice')
-  setState(prev => ({ ...prev, takeProfitPrice: enforcedValue }))
-}
-
-
-
-  const handleTakeProfitPriceBlur = () => {
-    // Format price according to Hyperliquid precision requirements when user finishes editing
-    if (state.takeProfitPrice && !isNaN(parseFloat(state.takeProfitPrice))) {
-      const price = parseFloat(state.takeProfitPrice)
-      
-      // Check if the price is valid according to Hyperliquid rules
-      if (!validateHyperliquidPriceSync(price, state.selectedCoin)) {
-        // Don't format if it's invalid - let user see the warning
-        return
-      }
-      
-      try {
-        const formattedPrice = formatHyperliquidPriceSync(price, state.selectedCoin)
-        setState(prev => ({ ...prev, takeProfitPrice: formattedPrice }))
-      } catch (error) {
-        console.error('Error formatting take profit price:', error)
-        // Fallback to original formatting
-        const formattedPrice = formatPriceForTickSize(price, state.selectedCoin)
-        setState(prev => ({ ...prev, takeProfitPrice: formattedPrice }))
-      }
-    }
-  }
-
-  // Stop Loss Price handlers with pxDecimals formatting
-
-  const handleStopLossPriceChange = (value: string, inputEl?: HTMLInputElement) => {
-  const trimmedValue = value.trim()
-  let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
-  numericValue = normalizeLeadingZeros(numericValue)
-
-  // Get price precision for the selected coin
-  let maxDecimals: number | null = null
-  try {
-    const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(state.selectedCoin)
-    maxDecimals = assetInfo.pxDecimals
-  } catch (error) {
-    console.error('Error getting price precision for stop loss price:', error)
-    maxDecimals = 4
-  }
-
+  console.log(`🔍 SL Price Change - Before validation: "${numericValue}", maxDecimals: ${maxDecimals}`)
   if (!isValidDecimalInsertion(numericValue, state.stopLossPrice || '', maxDecimals)) {
+    console.log(`🔍 SL Price Change - Validation failed, returning early`)
     moveCursorToEnd(inputEl)
     return
   }
+  console.log(`🔍 SL Price Change - Validation passed`)
 
-  const enforcedValue = enforceMaxDigits(numericValue, state.stopLossPrice || '', inputEl)
+      const enforcedValue = enforceMaxDigits(numericValue, state.stopLossPrice || '', inputEl)
+  console.log(`🔍 SL Price Change - After enforceMaxDigits: "${enforcedValue}"`)
   if (enforcedValue === null) {
+    console.log(`🔍 SL Price Change - enforceMaxDigits returned null, returning early`)
     return
   }
 
-  // Apply price precision limits
-  const parts = enforcedValue.split('.')
+  const normalizedEnforced = normalizeLeadingZeros(enforcedValue)
+
+  const parts = normalizedEnforced.split('.')
   if (parts.length > 2) {
     moveCursorToEnd(inputEl)
     return
+  }
+
+  // Apply Hyperliquid precision formatting when user finishes typing
+  // BUT only if the input is complete (not during typing)
+  let formattedValue = normalizedEnforced
+  if (normalizedEnforced && parseFloat(normalizedEnforced) > 0 && !normalizedEnforced.endsWith('.')) {
+    try {
+      // Use Hyperliquid precision formatting only for complete numbers
+      formattedValue = formatPriceWithPrecision(parseFloat(normalizedEnforced), state.selectedCoin)
+      console.log(`🔧 SL price formatted: ${normalizedEnforced} -> ${formattedValue}`)
+    } catch (error) {
+      console.warn('Failed to format SL price with precision, using original:', error)
+      formattedValue = normalizedEnforced
+    }
   }
 
   // Limit decimal places according to price precision
@@ -2111,37 +2062,76 @@ const TradingInterface: React.FC = () => {
     const decimalPart = parts[1]
     if (decimalPart.length > maxDecimals) {
       parts[1] = decimalPart.substring(0, maxDecimals)
-      numericValue = parts.join('.')
+      const truncatedValue = parts.join('.')
+      moveCursorToEnd(inputEl)
+      setState(prev => {
+        const newState = { ...prev, stopLossPrice: truncatedValue }
+        
+        // Calculate corresponding loss percentage when SL price is updated
+        if (typeof topCardPrice === 'number' && truncatedValue && parseFloat(truncatedValue) > 0) {
+          const slPrice = parseFloat(truncatedValue)
+          let lossPercent: number
+          
+          if (prev.side === 'buy') {
+            lossPercent = ((topCardPrice - slPrice) / topCardPrice) * 100
+          } else {
+            lossPercent = ((slPrice - topCardPrice) / topCardPrice) * 100
+          }
+          
+          if (!isNaN(lossPercent)) {
+            newState.stopLossLoss = lossPercent.toFixed(2)
+          }
+        }
+        
+        return newState
+      })
+      return
     }
   }
-
-  markFieldAsTouched('stopLossPrice')
-  setState(prev => ({ ...prev, stopLossPrice: enforcedValue }))
-}
-
-
-
-  const handleStopLossPriceBlur = () => {
-    // Format price according to Hyperliquid precision requirements when user finishes editing
-    if (state.stopLossPrice && !isNaN(parseFloat(state.stopLossPrice))) {
-      const price = parseFloat(state.stopLossPrice)
+    
+    markFieldAsTouched('stopLossPrice')
+  setState(prev => {
+    const newState = { ...prev, stopLossPrice: formattedValue }
+    
+    // Calculate corresponding loss percentage when SL price is updated
+    if (typeof topCardPrice === 'number' && formattedValue && parseFloat(formattedValue) > 0) {
+      const slPrice = parseFloat(formattedValue)
+      let lossPercent: number
       
-      // Check if the price is valid according to Hyperliquid rules
-      if (!validateHyperliquidPriceSync(price, state.selectedCoin)) {
-        // Don't format if it's invalid - let user see the warning
-        return
+      if (prev.side === 'buy') {
+        lossPercent = ((topCardPrice - slPrice) / topCardPrice) * 100
+      } else {
+        lossPercent = ((slPrice - topCardPrice) / topCardPrice) * 100
       }
       
-      try {
-        const formattedPrice = formatHyperliquidPriceSync(price, state.selectedCoin)
-        setState(prev => ({ ...prev, stopLossPrice: formattedPrice }))
-      } catch (error) {
-        console.error('Error formatting stop loss price:', error)
-        // Fallback to original formatting
-        const formattedPrice = formatPriceForTickSize(price, state.selectedCoin)
-        setState(prev => ({ ...prev, stopLossPrice: formattedPrice }))
+      if (!isNaN(lossPercent)) {
+        newState.stopLossLoss = lossPercent.toFixed(2)
       }
     }
+    
+    return newState
+  })
+}
+
+// Missing blur handlers
+const handleLimitPriceBlur = () => {
+  // Optional: Add any blur-specific logic here
+}
+
+const handleScaleStartPriceBlur = () => {
+  // Optional: Add any blur-specific logic here
+}
+
+const handleScaleEndPriceBlur = () => {
+  // Optional: Add any blur-specific logic here
+}
+
+const handleTakeProfitPriceBlur = () => {
+  // Optional: Add any blur-specific logic here
+}
+
+const handleStopLossPriceBlur = () => {
+  // Optional: Add any blur-specific logic here
   }
 
   const handleCoinChange = async (coin: string) => {
@@ -2167,6 +2157,15 @@ const TradingInterface: React.FC = () => {
     // Update position for the selected coin immediately
     try {
       await updatePositionForCoin(coin)
+
+      try {
+        const metadata = await HyperliquidPrecision.getAssetMetadata(coin)
+        if (metadata) {
+          recordPrecision(coin, metadata.szDecimals, metadata.pxDecimals)
+        }
+      } catch (precisionError) {
+        console.warn(`⚠️ Failed to refresh precision metadata for ${coin}:`, precisionError)
+      }
       
       // Get clearinghouse state to extract margin mode and leverage for this coin
       try {
@@ -2318,10 +2317,18 @@ const TradingInterface: React.FC = () => {
       price: (() => {
         if (state.orderType === 'market') {
           // For market orders, show current market price if available
-          return topCardPrice ? `$${topCardPrice.toFixed(2)} (Market)` : 'Market'
+        if (typeof topCardPrice === 'number') {
+          const formatted = formatPriceWithPrecision(topCardPrice, state.selectedCoin)
+          return `$${formatted} (Market)`
+        }
+        return 'Market'
         } else if (state.orderType === 'twap') {
           // For TWAP orders, show current market price
-          return topCardPrice ? `$${topCardPrice.toFixed(2)} (Market)` : 'Market'
+        if (typeof topCardPrice === 'number') {
+          const formatted = formatPriceWithPrecision(topCardPrice, state.selectedCoin)
+          return `$${formatted} (Market)`
+        }
+        return 'Market'
         } else if (state.orderType === 'scale') {
           // For scale orders, show start and end prices
           const startPrice = state.scaleStartPrice && state.scaleStartPrice.trim() !== '' ? state.scaleStartPrice : 'N/A'
@@ -2355,24 +2362,59 @@ const TradingInterface: React.FC = () => {
         
         // If we have a valid entry price, calculate liquidation price
         if (entryPrice && state.leverage > 0) {
-          const liquidationPrice = calculateLiquidationPriceLegacy(
-            entryPrice, 
-            state.leverage, 
-            state.side, 
-            state.selectedCoin, 
-            state.marginMode, 
-            parseFloat(accountInfo.availableToTrade || '0'),
-            0, // position size - will be calculated
-            parseFloat(accountInfo.availableToTrade || '0') + parseFloat(accountInfo.marginRequired || '0'), // account value
-            state.marginMode === 'isolated' ? parseFloat(accountInfo.availableToTrade || '0') : 0 // isolated margin
-          )
+          const positionSize = Math.abs(getCoinSizeForApi())
+
+          if (positionSize > 0) {
+            try {
+              const rawTransferRequirement = accountInfo.transferRequirement
+              const derivedTransferRequirement =
+                typeof rawTransferRequirement === 'number' && Number.isFinite(rawTransferRequirement)
+                  ? rawTransferRequirement
+                  : Math.max(
+                      accountInfo.marginRequired || 0,
+                      (accountInfo.totalNotional || 0) * 0.1
+                    )
+
+              const accountValue =
+                typeof accountInfo.accountValue === 'number' && Number.isFinite(accountInfo.accountValue)
+                  ? accountInfo.accountValue
+                  : accountInfo.availableToTrade + (Number.isFinite(derivedTransferRequirement) ? derivedTransferRequirement : accountInfo.marginRequired || 0)
+              const isolatedMargin = state.marginMode === 'isolated'
+                ? calculateIsolatedMarginRequirement(positionSize, entryPrice, state.leverage)
+                : 0
+
+              const marginTiers = leverageInfo?.marginTable?.marginTiers?.map(tier => ({
+                lowerBound: parseFloat(tier.lowerBound),
+                maxLeverage: tier.maxLeverage
+              })).filter(tier => Number.isFinite(tier.lowerBound) && tier.maxLeverage > 0)
+
+              const liquidationPrice = calculateLiquidationPriceFromInputs({
+                entryPrice,
+                leverage: state.leverage,
+                side: state.side,
+                coin: state.selectedCoin,
+                marginMode: state.marginMode,
+                walletBalance: accountInfo.availableToTrade,
+                positionSize,
+                accountValue,
+                isolatedMargin,
+                transferRequirement: derivedTransferRequirement,
+                marginTiers,
+                maxLeverage: leverageInfo?.maxLeverage
+              })
           
           // Handle negative liquidation price (very safe position in cross margin)
           if (liquidationPrice < 0) {
-            return `Very Safe (${liquidationPrice.toFixed(2)})`
+                return `N/A`
           }
           
-          return `$${liquidationPrice.toFixed(2)}`
+          return `$${formatPriceWithPrecision(liquidationPrice, state.selectedCoin)}`
+            } catch (error) {
+              console.error('Failed to calculate liquidation price:', error)
+            }
+          }
+
+          return 'N/A'
         }
         
         return 'N/A'
@@ -2659,9 +2701,10 @@ const TradingInterface: React.FC = () => {
               
               // Hide task when progress reaches 100%
               if (progress >= 100) return null
+              const coinForPrecision = task.coin?.includes('-') ? task.coin : `${task.coin}-PERP`
               const plannedSubOrder = task.subOrderSizes && task.subOrderSizes.length > 0
                 ? task.subOrderSizes[0]
-                : (task.totalSize / task.intervals).toFixed(task.sizePrecision ?? 4)
+                : formatSizeWithPrecision(task.totalSize / task.intervals, coinForPrecision)
               const statusColor = task.status === 'completed' ? 'text-green-400' : 
                                 task.status === 'failed' ? 'text-red-400' : 'text-blue-400'
               const statusIcon = task.status === 'completed' ? '✅' : 
@@ -2805,7 +2848,7 @@ const TradingInterface: React.FC = () => {
             {/* Left side - Selected coin info */}
             <div className="flex items-center gap-3">
               <span className="text-white font-medium">
-                {state.selectedCoin || 'Select Coin'}
+                {state.selectedCoin ? formatCoinDisplayName(state.selectedCoin) : 'Select Coin'}
               </span>
               {leverageInfo && (
                 <span className="px-2 py-1 bg-green-600 text-white text-xs rounded-full">
@@ -2898,7 +2941,7 @@ const TradingInterface: React.FC = () => {
                   {/* Symbol Column */}
                   <div className="flex flex-col gap-1">
                   <div className="flex items-center gap-2">
-                    <span className="text-white font-medium">{coin.symbol}</span>
+                    <span className="text-white font-medium">{formatCoinDisplayName(coin.symbol)}</span>
                     <span className="px-2 py-1 bg-green-600 text-white text-xs rounded-full">
                       {coinMaxLeverage}x
                     </span>
@@ -3007,7 +3050,8 @@ const TradingInterface: React.FC = () => {
               ...prev, 
               orderType: 'limit',
               // Prefill limit price with current market price (formatted)
-              limitPrice: typeof topCardPrice === 'number' ? formatPriceForTickSize(topCardPrice, prev.selectedCoin) : prev.limitPrice
+              limitPrice: typeof topCardPrice === 'number' ? formatPriceForTickSize(topCardPrice, prev.selectedCoin) : prev.limitPrice,
+              limitPriceManuallySet: false // Reset manual flag when switching to limit order
             }))
           }}
         >
@@ -3105,11 +3149,11 @@ const TradingInterface: React.FC = () => {
       <div className="mb-4 space-y-2">
         <div className="flex justify-between text-sm">
           <span className="text-gray-400">Available to Trade:</span>
-          <span className="text-white">{accountInfo.availableToTrade}</span>
+          <span className="text-white">${formatNumberWithCommas(accountInfo.availableToTrade || 0)}</span>
         </div>
         <div className="flex justify-between text-sm">
           <span className="text-gray-400">Current Position:</span>
-          <span className="text-white">{accountInfo.currentPosition}</span>
+          <span className="text-white">{currentCoinPosition}</span>
         </div>
       </div>
 
@@ -3152,10 +3196,75 @@ const TradingInterface: React.FC = () => {
             title={getSizeInputRestrictions().title}
             className="flex-1 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-teal-primary"
           />
-          <select
-            value={state.sizeUnit}
-            onChange={(e) => {
-              const newUnit = e.target.value as 'USD' | string
+          {/* Size Unit Dropdown */}
+          <div className="relative size-unit-dropdown-container">
+            <div 
+              className="px-3 py-2 bg-dark-border border border-gray-600 rounded text-white focus:outline-none focus:border-teal-primary cursor-pointer flex items-center justify-between min-w-[80px]"
+              onClick={() => setIsSizeUnitDropdownOpen(!isSizeUnitDropdownOpen)}
+            >
+              <span className="text-white">
+                {state.sizeUnit === 'USD' ? 'USD' : state.sizeUnit?.replace('-PERP', '')}
+              </span>
+              <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </div>
+            
+            {/* Size Unit Dropdown Options */}
+            {isSizeUnitDropdownOpen && (
+              <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg z-50 min-w-[120px]">
+                <div 
+                  className={`px-3 py-2 cursor-pointer hover:bg-gray-700 ${
+                    state.sizeUnit === 'USD' ? 'bg-teal-900/20 text-teal-400' : 'text-white'
+                  }`}
+                  onClick={() => {
+                    const newUnit = 'USD'
+                    const currentSize = parseFloat(state.size)
+                    
+                    // If switching from coin unit to USD, convert coin size to USD
+                    if (state.sizeUnit !== 'USD' && newUnit === 'USD' && !isNaN(currentSize) && currentSize > 0) {
+                      try {
+                        // Get current coin price
+                        const coinPrice = currentPrice || topCardPrice
+                        if (coinPrice && coinPrice > 0) {
+                          // Convert coin size to USD: usd = size * coin-price
+                          const convertedUSD = currentSize * coinPrice
+                          
+                          // Round DOWN to 2 decimal places for USD
+                          const roundedUSD = Math.floor(convertedUSD * 100) / 100
+                          
+                          // Check if converted USD is valid (not zero or negative)
+                          if (roundedUSD > 0) {
+                            // Format to 2 decimal places
+                            const formattedUSD = formatNumberWithCommas(roundedUSD)
+                            
+                            setState(prev => ({ ...prev, sizeUnit: newUnit, size: formattedUSD }))
+                          } else {
+                            // If converted USD is too small, clear the input
+                            setState(prev => ({ ...prev, sizeUnit: newUnit, size: '' }))
+                          }
+                        } else {
+                          // No price available, clear the input
+                          setState(prev => ({ ...prev, sizeUnit: newUnit, size: '' }))
+                        }
+                      } catch (error) {
+                        console.warn('Could not convert coin size to USD:', error)
+                        setState(prev => ({ ...prev, sizeUnit: newUnit, size: '' }))
+                      }
+                    } else {
+                      setState(prev => ({ ...prev, sizeUnit: newUnit }))
+                    }
+                    setIsSizeUnitDropdownOpen(false)
+                  }}
+                >
+                  USD
+                </div>
+                <div 
+                  className={`px-3 py-2 cursor-pointer hover:bg-gray-700 ${
+                    state.sizeUnit === state.selectedCoin ? 'bg-teal-900/20 text-teal-400' : 'text-white'
+                  }`}
+                  onClick={() => {
+                    const newUnit = state.selectedCoin
               const currentSize = parseFloat(state.size)
               
               // If switching from USD to coin unit, convert USD to coin size
@@ -3168,24 +3277,20 @@ const TradingInterface: React.FC = () => {
                     const convertedSize = currentSize / coinPrice
                     
                     // Get the target coin's szDecimals for rounding
-                    const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(state.selectedCoin)
-                    const szDecimals = assetInfo.szDecimals
+                    const szDecimals = getCachedSzDecimals(state.selectedCoin)
                     
                     console.log(`🔄 Size conversion for ${state.selectedCoin}:`, {
                       originalSize: currentSize,
                       coinPrice,
                       convertedSize,
-                      szDecimals,
-                      assetInfo
+                      szDecimals
                     })
                     
                     // Round DOWN according to coin size decimal
                     let roundedSize: number
                     if (szDecimals === 0) {
-                      // For DOGE (szDecimals = 0), round DOWN to nearest integer
                       roundedSize = Math.floor(convertedSize)
                     } else {
-                      // For other coins, round DOWN to szDecimals
                       const multiplier = Math.pow(10, szDecimals)
                       roundedSize = Math.floor(convertedSize * multiplier) / multiplier
                     }
@@ -3193,72 +3298,32 @@ const TradingInterface: React.FC = () => {
                     // Check if rounded size is valid (not zero or negative)
                     if (roundedSize > 0) {
                       // Format the size according to szDecimals
-                      const formattedSize = szDecimals === 0 
-                        ? roundedSize.toString()
-                        : roundedSize.toFixed(szDecimals)
+                      const formattedSize = formatSizeWithPrecision(roundedSize, state.selectedCoin)
                       
                       setState(prev => ({ ...prev, sizeUnit: newUnit, size: formattedSize }))
-                      return
                     } else {
                       // If converted size is too small (like 0.8 for DOGE), clear the input
                       setState(prev => ({ ...prev, sizeUnit: newUnit, size: '' }))
-                      return
                     }
                   } else {
                     // No price available, clear the input
                     setState(prev => ({ ...prev, sizeUnit: newUnit, size: '' }))
-                    return
                   }
                 } catch (error) {
                   console.warn('Could not convert USD to coin size:', error)
                   setState(prev => ({ ...prev, sizeUnit: newUnit, size: '' }))
-                  return
-                }
-              }
-              
-              // If switching from coin unit to USD, convert coin size to USD
-              if (state.sizeUnit !== 'USD' && newUnit === 'USD' && !isNaN(currentSize) && currentSize > 0) {
-                try {
-                  // Get current coin price
-                  const coinPrice = currentPrice || topCardPrice
-                  if (coinPrice && coinPrice > 0) {
-                    // Convert coin size to USD: usd = size * coin-price
-                    const convertedUSD = currentSize * coinPrice
-                    
-                    // Round DOWN to 2 decimal places for USD
-                    const roundedUSD = Math.floor(convertedUSD * 100) / 100
-                    
-                    // Check if converted USD is valid (not zero or negative)
-                    if (roundedUSD > 0) {
-                      // Format to 2 decimal places
-                      const formattedUSD = roundedUSD.toFixed(2)
-                      
-                      setState(prev => ({ ...prev, sizeUnit: newUnit, size: formattedUSD }))
-                      return
+                      }
                     } else {
-                      // If converted USD is too small, clear the input
-                      setState(prev => ({ ...prev, sizeUnit: newUnit, size: '' }))
-                      return
-                    }
-                  } else {
-                    // No price available, clear the input
-                    setState(prev => ({ ...prev, sizeUnit: newUnit, size: '' }))
-                    return
-                  }
-                } catch (error) {
-                  console.warn('Could not convert coin size to USD:', error)
-                  setState(prev => ({ ...prev, sizeUnit: newUnit, size: '' }))
-                  return
-                }
-              }
-              
               setState(prev => ({ ...prev, sizeUnit: newUnit }))
-            }}
-            className="px-3 py-2 bg-dark-border border border-gray-600 rounded text-white focus:outline-none focus:border-teal-primary"
-          >
-            <option value="USD">USD</option>
-            <option value={state.selectedCoin}>{state.selectedCoin?.replace('-PERP', '')}</option>
-          </select>
+                    }
+                    setIsSizeUnitDropdownOpen(false)
+                  }}
+                >
+                  {state.selectedCoin?.replace('-PERP', '')}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Coin Size Display - always reserve space but only show when USD is selected */}
@@ -3306,7 +3371,7 @@ const TradingInterface: React.FC = () => {
                   if (typeof topCardPrice === 'number') {
                     const formattedPrice = formatPriceForTickSize(topCardPrice, state.selectedCoin)
                     markFieldAsTouched('limitPrice')
-                    setState(prev => ({ ...prev, limitPrice: formattedPrice }))
+                    setState(prev => ({ ...prev, limitPrice: formattedPrice, limitPriceManuallySet: false }))
                     console.log(`🔄 Mid button clicked - updated limit price to: ${formattedPrice}`)
                   }
                 }}
@@ -3671,7 +3736,7 @@ const TradingInterface: React.FC = () => {
                     // Validation warnings
                     const validationWarnings = []
                     if (roundedSubOrderUsdValue < 10) {
-                      validationWarnings.push(`⚠️ Sub-order value too low: $${roundedSubOrderUsdValue.toFixed(2)} (minimum: $10.00)`)
+                      validationWarnings.push(`⚠️ Sub-order value too low: $${formatNumberWithCommas(roundedSubOrderUsdValue)} (minimum: $10.00)`)
                     }
                     if (numberOfOrders < 2) {
                       validationWarnings.push(`⚠️ Runtime too short: minimum 1 minute required`)
@@ -3699,10 +3764,8 @@ const TradingInterface: React.FC = () => {
                               const baseCoin = state.selectedCoin?.replace('-PERP', '') || 'COIN'
                               
                               // Format with appropriate decimal places using hyperliquidPrecisionConfig
-                              const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(state.selectedCoin)
-                              const decimalPlaces = assetInfo.szDecimals
-                              
-                              return `${roundedSubOrderSize.toFixed(decimalPlaces)} ${baseCoin}`
+                              const formattedSize = formatSizeWithPrecision(roundedSubOrderSize, state.selectedCoin)
+                              return `${formattedSize} ${baseCoin}`
                             })()}
                           </span>
                         </div>
@@ -4021,7 +4084,7 @@ const TradingInterface: React.FC = () => {
                     totalValue += sizeValue * price
                   }
                   
-                  return `$${totalValue.toFixed(2)}`
+                  return `$${formatNumberWithCommas(totalValue)}`
                 })()}
               </span>
             </div>
@@ -4044,12 +4107,12 @@ const TradingInterface: React.FC = () => {
                   if (state.sizeUnit === 'USD') {
                     // For USD mode, each sub-order gets equal USD value
                     const subOrderUsdValue = totalSize / orderCount
-                    return `$${subOrderUsdValue.toFixed(2)}`
+                    return `$${formatNumberWithCommas(subOrderUsdValue)}`
                   } else {
                     // For coin mode, calculate USD value using average price
                     const subOrderSize = totalSize / orderCount
                     const subOrderUsdValue = subOrderSize * avgPrice
-                    return `$${subOrderUsdValue.toFixed(2)}`
+                    return `$${formatNumberWithCommas(subOrderUsdValue)}`
                   }
                 })()}
               </span>
@@ -4091,7 +4154,7 @@ const TradingInterface: React.FC = () => {
                   }
                   
                   const margin = totalValue / state.leverage
-                  return `$${margin.toFixed(2)}`
+                  return `$${formatNumberWithCommas(margin)}`
                 })()}
               </span>
             </div>
@@ -4112,25 +4175,58 @@ const TradingInterface: React.FC = () => {
                   ? parseFloat(state.limitPrice) 
                   : topCardPrice // Use current price for market orders
                 const leverage = state.leverage
-                
-                    const liquidationPrice = calculateLiquidationPriceLegacy(
+                const positionSize = Math.abs(getCoinSizeForApi())
+
+                if (positionSize > 0) {
+                  try {
+                    const rawTransferRequirement = accountInfo.transferRequirement
+                    const derivedTransferRequirement =
+                      typeof rawTransferRequirement === 'number' && Number.isFinite(rawTransferRequirement)
+                        ? rawTransferRequirement
+                        : Math.max(
+                            accountInfo.marginRequired || 0,
+                            (accountInfo.totalNotional || 0) * 0.1
+                          )
+
+                    const accountValue =
+                      typeof accountInfo.accountValue === 'number' && Number.isFinite(accountInfo.accountValue)
+                        ? accountInfo.accountValue
+                        : accountInfo.availableToTrade + (Number.isFinite(derivedTransferRequirement) ? derivedTransferRequirement : accountInfo.marginRequired || 0)
+                    const isolatedMargin = state.marginMode === 'isolated'
+                      ? calculateIsolatedMarginRequirement(positionSize, entryPrice, leverage)
+                      : 0
+
+                    const marginTiers = leverageInfo?.marginTable?.marginTiers?.map(tier => ({
+                      lowerBound: parseFloat(tier.lowerBound),
+                      maxLeverage: tier.maxLeverage
+                    })).filter(tier => Number.isFinite(tier.lowerBound) && tier.maxLeverage > 0)
+
+                    const liquidationPrice = calculateLiquidationPriceFromInputs({
                       entryPrice, 
                       leverage, 
-                      state.side, 
-                      state.selectedCoin, 
-                      state.marginMode, 
-                      parseFloat(accountInfo.availableToTrade || '0'),
-                      0, // position size - will be calculated
-                      parseFloat(accountInfo.availableToTrade || '0') + parseFloat(accountInfo.marginRequired || '0'), // account value
-                      state.marginMode === 'isolated' ? parseFloat(accountInfo.availableToTrade || '0') : 0 // isolated margin
-                    )
-                    
-                    // Handle negative liquidation price (very safe position in cross margin)
+                      side: state.side,
+                      coin: state.selectedCoin,
+                      marginMode: state.marginMode,
+                      walletBalance: accountInfo.availableToTrade,
+                      positionSize,
+                      accountValue,
+                      isolatedMargin,
+                      transferRequirement: derivedTransferRequirement,
+                      marginTiers,
+                      maxLeverage: leverageInfo?.maxLeverage
+                    })
+
                     if (liquidationPrice < 0) {
-                      return `Very Safe (${liquidationPrice.toFixed(2)})`
+                      return `N/A`
                     }
                     
-                return `$${liquidationPrice.toFixed(2)}`
+                return `$${formatPriceWithPrecision(liquidationPrice, state.selectedCoin)}`
+                  } catch (error) {
+                    console.error('Failed to calculate liquidation price:', error)
+                  }
+                }
+
+                return 'N/A'
               }
               return 'N/A'
             })()}
@@ -4143,12 +4239,24 @@ const TradingInterface: React.FC = () => {
               // Check if size is valid
               const sizeValue = parseFloat(state.size || '0')
               const isValidSize = !isNaN(sizeValue) && sizeValue > 0
-              
+
               if (state.size && state.sizeUnit === 'USD' && isValidSize) {
-                return `$${sizeValue.toFixed(2)}`
-              } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number' && isValidSize) {
-                const value = sizeValue * topCardPrice
-                return `$${value.toFixed(2)}`
+                return `$${formatNumberWithCommas(sizeValue)}`
+              } else if (state.size && state.sizeUnit === state.selectedCoin && isValidSize) {
+                const limitPrice = state.orderType === 'limit' ? parseFloat(state.limitPrice || '0') : NaN
+                const fallbackPrice = typeof currentPrice === 'number' && currentPrice > 0
+                  ? currentPrice
+                  : (typeof topCardPrice === 'number' && topCardPrice > 0 ? topCardPrice : 0)
+                const priceForValue = state.orderType === 'limit' && !isNaN(limitPrice) && limitPrice > 0
+                  ? limitPrice
+                  : fallbackPrice
+
+                if (priceForValue <= 0) {
+                  return 'N/A'
+                }
+
+                const value = sizeValue * priceForValue
+                return `$${formatNumberWithCommas(value)}`
               }
               return 'N/A'
             })()}
@@ -4160,22 +4268,39 @@ const TradingInterface: React.FC = () => {
             {(() => {
               if (state.size && state.sizeUnit === 'USD') {
                 const margin = parseFloat(state.size) / state.leverage
-                return `$${margin.toFixed(2)}`
-              } else if (state.size && state.sizeUnit === state.selectedCoin && typeof topCardPrice === 'number') {
-                const value = parseFloat(state.size) * topCardPrice
+                return `$${formatNumberWithCommas(margin)}`
+              } else if (state.size && state.sizeUnit === state.selectedCoin) {
+                const sizeValue = parseFloat(state.size)
+                if (isNaN(sizeValue) || sizeValue <= 0) {
+                  return 'N/A'
+                }
+
+                const limitPrice = state.orderType === 'limit' ? parseFloat(state.limitPrice || '0') : NaN
+                const fallbackPrice = typeof currentPrice === 'number' && currentPrice > 0
+                  ? currentPrice
+                  : (typeof topCardPrice === 'number' && topCardPrice > 0 ? topCardPrice : 0)
+                const priceForValue = state.orderType === 'limit' && !isNaN(limitPrice) && limitPrice > 0
+                  ? limitPrice
+                  : fallbackPrice
+
+                if (priceForValue <= 0) {
+                  return 'N/A'
+                }
+
+                const value = sizeValue * priceForValue
                 const margin = value / state.leverage
-                return `$${margin.toFixed(2)}`
+                return `$${formatNumberWithCommas(margin)}`
               }
               return 'N/A'
             })()}
           </span>
         </div>
-        <div className="flex justify-between">
+        {/* <div className="flex justify-between">
           <span className="text-gray-400">Slippage:</span>
           <span className="text-white">
             {state.orderType === 'market' ? 'Est: 0.1% / Max: 0.5%' : 'Est: 0% / Max: 0.1%'}
           </span>
-        </div>
+        </div> */}
             {/* <div className="flex justify-between">
           <span className="text-gray-400">Fees:</span>
           <span className="text-green-400 flex items-center gap-1">
@@ -4235,7 +4360,9 @@ const TradingInterface: React.FC = () => {
                     // Handle different order types
                     if (pendingOrder.orderType === 'twap') {
                       // For TWAP orders, show market price
-                      return topCardPrice ? `$${topCardPrice.toFixed(2)} (Market)` : 'Market'
+                      return typeof topCardPrice === 'number'
+                        ? `$${formatPriceWithPrecision(topCardPrice, state.selectedCoin)} (Market)`
+                        : 'Market'
                     } else if (pendingOrder.orderType === 'scale') {
                       // For scale orders, show start and end prices
                       const startPrice = state.scaleStartPrice && state.scaleStartPrice.trim() !== '' ? state.scaleStartPrice : 'N/A'
@@ -4245,8 +4372,8 @@ const TradingInterface: React.FC = () => {
                       // For market and limit orders, use the existing logic
                       if (!pendingOrder.price || pendingOrder.price === 'Market' || pendingOrder.price === '') {
                         // For market orders, show current market price if available
-                        if (pendingOrder.orderType === 'market' && topCardPrice) {
-                          return `$${topCardPrice.toFixed(2)} (Market)`
+                        if (pendingOrder.orderType === 'market' && typeof topCardPrice === 'number') {
+                          return `$${formatPriceWithPrecision(topCardPrice, state.selectedCoin)} (Market)`
                         }
                         // For limit orders without price, show N/A
                         if (pendingOrder.orderType === 'limit' && (!pendingOrder.price || pendingOrder.price === '')) {

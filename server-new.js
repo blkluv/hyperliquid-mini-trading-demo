@@ -6,6 +6,7 @@ import express from 'express'
 import cors from 'cors'
 import * as hl from '@nktkas/hyperliquid'
 import { ethers } from 'ethers'
+import { getCoinPrecision } from './src/config/hyperliquidPrecisionConfig.js'
 
 const app = express()
 // PORT is now defined in CONFIG
@@ -157,78 +158,26 @@ const getNetworkName = () => (CONFIG.USE_TESTNET ? 'testnet' : 'mainnet')
 
 // Get szDecimals directly from Hyperliquid API
 const getSzDecimals = async (coin) => {
-  try {
-    if (!infoClient) {
-      console.warn(`⚠️ InfoClient not available for ${coin}, using defaults`)
-      return {
-        szDecimals: DEFAULT_SZ_DECIMALS,
-        pxDecimals: DEFAULT_PX_DECIMALS,
-        isPerp: coin.includes('-PERP'),
-        name: coin
-      }
-    }
-    
-    console.log(`🔍 Getting asset metadata for ${coin} from Hyperliquid API`)
-    
-    // Get fresh data from API
-    const [meta, assetCtxs] = await infoClient.metaAndAssetCtxs()
-    
-    if (meta && meta.universe) {
-      // Find the asset in the universe
-      const asset = meta.universe.find(a => a.name === coin)
-      if (asset && typeof asset.szDecimals === 'number') {
-        const assetIndex = meta.universe.indexOf(asset)
-        const ctx = assetCtxs?.[assetIndex]
-        const pxDecimals = derivePxDecimalsFromContext(ctx)
-        
-        const result = {
-          szDecimals: asset.szDecimals,
-          pxDecimals,
-          isPerp: coin.includes('-PERP'),
-          name: coin
-        }
-        
-        console.log(`✅ Found asset data for ${coin}:`, result)
-        return result
-      }
-    }
-    
-    // Asset not found, use defaults
-    console.log(`⚠️ Asset ${coin} not found in API, using defaults`)
-    return {
-      szDecimals: DEFAULT_SZ_DECIMALS,
-      pxDecimals: DEFAULT_PX_DECIMALS,
-      isPerp: coin.includes('-PERP'),
-      name: coin
-    }
-  } catch (error) {
-    console.error(`❌ Error getting szDecimals for ${coin}:`, error)
-    return {
-      szDecimals: DEFAULT_SZ_DECIMALS,
-      pxDecimals: DEFAULT_PX_DECIMALS,
-      isPerp: coin.includes('-PERP'),
-      name: coin
-    }
+  // NOTE: The Hyperliquid API occasionally returns inconsistent precision data.
+  // Until we have a more reliable signal, we rely on the fallback config values.
+  const precisionOverride = getCoinPrecision(coin)
+  return {
+    szDecimals: precisionOverride.szDecimals ?? DEFAULT_SZ_DECIMALS,
+    pxDecimals: precisionOverride.pxDecimals ?? DEFAULT_PX_DECIMALS,
+    isPerp: coin.includes('-PERP'),
+    name: coin
   }
 }
 
-// Get minimum order size based on szDecimals
+// Get minimum order size based on szDecimals from hyperliquidPrecisionConfig
 const getMinOrderSize = (coin) => {
-  const szDecimalsMap = {
-    'DOGE-PERP': 0,
-    'BTC-PERP': 5,
-    'ETH-PERP': 2,
-    'SOL-PERP': 2,
-    'AVAX-PERP': 2,
-    'MATIC-PERP': 2,
-    'LINK-PERP': 2,
-    'UNI-PERP': 2,
-    'AAVE-PERP': 2,
-    'CRV-PERP': 2,
+  try {
+    const precision = getCoinPrecision(coin)
+    return Math.pow(10, -precision.szDecimals)
+  } catch (error) {
+    console.warn(`Failed to get precision for ${coin}, using default:`, error)
+    return Math.pow(10, -6) // Default fallback
   }
-  
-  const szDecimals = szDecimalsMap[coin] || 6
-  return Math.pow(10, -szDecimals)
 }
 
 const broadcastPrices = (prices = latestPrices) => {
@@ -458,16 +407,17 @@ app.get('/api/top-coins', async (req, res) => {
       .slice(0, 10)
       .map(({ asset, ctx, dayNotionalVolume, dayBaseVolume }) => {
         const symbol = asset.name.includes('-PERP') ? asset.name : `${asset.name}-PERP`
-        const pxDecimals = derivePxDecimalsFromContext(ctx)
+        const precision = getCoinPrecision(symbol)
 
-        // 移除缓存调用，直接从API获取数据
+        // NOTE: API precision fields are ignored because they are currently unstable.
+        //        When Hyperliquid precision becomes more trustworthy we can revisit.
 
         return {
           symbol,
           name: asset.name,
           maxLeverage: asset.maxLeverage,
-          szDecimals: asset.szDecimals,
-          pxDecimals,
+          szDecimals: precision.szDecimals,
+          pxDecimals: precision.pxDecimals,
           marginTableId: asset.marginTableId,
           dayNotionalVolume,
           dayBaseVolume,
@@ -522,22 +472,29 @@ app.get('/api/leverage/:coin', async (req, res) => {
     }
     
     const ctx = assetCtxs?.[assetIndex]
-    const pxDecimals = derivePxDecimalsFromContext(ctx)
-    const metadata = await getSzDecimals(asset.name.includes('-PERP') ? asset.name : `${asset.name}-PERP`)
+    const symbol = asset.name.includes('-PERP') ? asset.name : `${asset.name}-PERP`
+    const precision = getCoinPrecision(symbol)
+    const metadata = await getSzDecimals(symbol)
     
     // Get margin table information
-    const marginTable = meta.marginTables[asset.marginTableId]
-    
+    let marginTable = null
+    if (Array.isArray(meta.marginTables)) {
+      const tableEntry = meta.marginTables.find(entry => Array.isArray(entry) && entry[0] === asset.marginTableId)
+      if (tableEntry && tableEntry.length > 1) {
+        marginTable = tableEntry[1]
+      }
+    }
+
     const leverageInfo = {
       coin: asset.name,
       maxLeverage: asset.maxLeverage,
       marginTableId: asset.marginTableId,
-      szDecimals: metadata?.szDecimals ?? asset.szDecimals,
-      pxDecimals: metadata?.pxDecimals ?? pxDecimals,
-      marginTable: marginTable,
+      szDecimals: metadata?.szDecimals ?? precision.szDecimals,
+      pxDecimals: metadata?.pxDecimals ?? precision.pxDecimals,
+      marginTable,
       timestamp: new Date().toISOString()
     }
-    
+
     res.json(leverageInfo)
   } catch (error) {
     console.error(`❌ Leverage info failed for ${req.params.coin}:`, error)
@@ -641,7 +598,7 @@ app.get('/api/market-data', async (req, res) => {
       }
 
       const ctx = assetCtxs?.[index]
-      const pxDecimals = derivePxDecimalsFromContext(ctx)
+      const pxDecimals = typeof asset.pxDecimals === 'number' ? asset.pxDecimals : derivePxDecimalsFromContext(ctx)
       const markPrice = ctx?.markPx ? parseFloat(ctx.markPx) : null
       const midPrice = ctx?.midPx ? parseFloat(ctx.midPx) : null
       const oraclePrice = ctx?.oraclePx ? parseFloat(ctx.oraclePx) : null
@@ -796,14 +753,17 @@ app.post('/api/place-order', async (req, res) => {
             ? marketPrice * 1.8  // 80% above market for buy orders
             : marketPrice * 0.2   // 80% below market for sell orders
           
+          const formattedSuggested = formatPriceForTickSize(suggestedPrice, orderData.coin)
+          const formattedMarket = formatPriceForTickSize(marketPrice, orderData.coin)
+          
           return res.status(400).json({ 
             error: 'Order price cannot be more than 80% away from the reference price',
             details: errorMessage,
             orderPrice,
             marketPrice,
             deviation: priceDeviation,
-            suggestedPrice: suggestedPrice.toFixed(2),
-            suggestion: `Try using a price around $${suggestedPrice.toFixed(2)} (within 80% of market price $${marketPrice})`
+            suggestedPrice: formattedSuggested,
+            suggestion: `Try using a price around $${formattedSuggested} (within 80% of market price $${formattedMarket})`
           })
         }
         
@@ -1671,59 +1631,27 @@ const getFallbackAssetId = (coinName) => {
   return 0
 }
 
-// Helper function to format price for tick size
+// Helper function to format price for tick size using hyperliquidPrecisionConfig
 const formatPriceForTickSize = (price, coinName) => {
-  const tickSizes = {
-    'BTC-PERP': 0.5,
-    'ETH-PERP': 0.05,
-    'DOGE-PERP': 0.00001,
-    'SOL-PERP': 0.01,
-    'AVAX-PERP': 0.01,
-    'MATIC-PERP': 0.0001,
-    'ARB-PERP': 0.0001,
-    'OP-PERP': 0.0001,
-    'SUI-PERP': 0.0001,
-    'APT-PERP': 0.0001,
-    'NEAR-PERP': 0.0001,
-    'ATOM-PERP': 0.0001,
-    'DOT-PERP': 0.0001,
-    'LINK-PERP': 0.0001,
-    'UNI-PERP': 0.0001,
-    'AAVE-PERP': 0.01,
-    'CRV-PERP': 0.0001,
-    'MKR-PERP': 0.1,
-    'COMP-PERP': 0.01,
-    'YFI-PERP': 1,
-    'SNX-PERP': 0.001,
-    'SUSHI-PERP': 0.0001
-  }
-  
-  const tickSize = tickSizes[coinName] || 0.0001
+  try {
+    const precision = getCoinPrecision(coinName)
+    const pxDecimals = precision.pxDecimals
+    
+    // Calculate tick size based on pxDecimals
+    const tickSize = Math.pow(10, -pxDecimals)
   const roundedPrice = Math.round(price / tickSize) * tickSize
   
-  // For BTC-PERP (tick size 0.5), ensure we don't have decimal places beyond what's allowed
-  if (coinName === 'BTC-PERP') {
-    // For BTC, ensure the price is divisible by 0.5
-    // Round to nearest 0.5 increment and ensure proper formatting
-    const rounded = Math.round(roundedPrice * 2) / 2
-    
-    // Ensure we don't have floating point precision issues
-    if (rounded % 1 === 0) {
-      return rounded.toString() + '.0'
-    } else {
-      // For .5 values, ensure clean formatting
-      return rounded.toString()
+    // Format with appropriate decimal places based on pxDecimals
+    return roundedPrice.toFixed(pxDecimals)
+  } catch (error) {
+    console.warn(`Failed to format price for ${coinName}, using default:`, error)
+    const fallbackDecimals = DEFAULT_PX_DECIMALS
+    const numericPrice = Number(price)
+    if (!Number.isFinite(numericPrice)) {
+      return String(price)
     }
+    return fallbackDecimals <= 0 ? Math.round(numericPrice).toString() : numericPrice.toFixed(fallbackDecimals)
   }
-  
-  // For other coins, use appropriate decimal places
-  const decimalPlaces = tickSize >= 1 ? 0 : 
-                       tickSize >= 0.1 ? 1 : 
-                       tickSize >= 0.01 ? 2 : 
-                       tickSize >= 0.001 ? 3 : 
-                       tickSize >= 0.0001 ? 4 : 8
-  
-  return roundedPrice.toFixed(decimalPlaces)
 }
 
 // TWAP helper functions
@@ -1789,16 +1717,15 @@ const getSzDecimalsFromMeta = (coin) => {
   }
 }
 
-// 默认szDecimals配置
+// 默认szDecimals配置 - 使用hyperliquidPrecisionConfig
 const getDefaultSzDecimals = (coin) => {
-  const defaults = {
-    'DOGE-PERP': 0,
-    'BTC-PERP': 5,
-    'ETH-PERP': 2,
-    'SOL-PERP': 2,
-    'AVAX-PERP': 2
+  try {
+    const precision = getCoinPrecision(coin)
+    return precision.szDecimals
+  } catch (error) {
+    console.warn(`Failed to get precision for ${coin}, using default:`, error)
+    return 2 // Default fallback
   }
-  return defaults[coin] || 2
 }
 
 const getFormattedSubOrderSizes = (task) => {

@@ -1,4 +1,4 @@
-import { getCoinPrecision } from './hyperliquidPrecisionConfig'
+import { COIN_PRECISION_CONFIG, getCoinPrecision } from './hyperliquidPrecisionConfig'
 
 // Trading configuration for managing hardcoded values
 // This file centralizes all trading-related constants and configurations
@@ -28,7 +28,7 @@ export const TRADING_CONFIG = {
   // Minimum order sizes are now calculated dynamically based on szDecimals
   // Formula: minSize = 1 / 10^szDecimals
 
-  // Size decimals are now managed in hyperliquidPrecisionConfig.ts
+  // Size decimals are now managed in hyperliquidPrecisionConfig
   // This provides a centralized way to manage all precision values
 
   // Minimum order value in USD
@@ -41,6 +41,12 @@ export const TRADING_CONFIG = {
   FEES: {
     MAKER_FEE: 0.0001,  // 0.01%
     TAKER_FEE: 0.0002,  // 0.02%
+  },
+
+  // Margin handling
+  MARGIN: {
+    // Toggle to turn minimum margin validation on/off across the UI
+    ENFORCE_MIN_REQUIREMENTS: false,
   },
 }
 
@@ -177,6 +183,14 @@ export class TradingConfigHelper {
   }
 
   /**
+   * Whether minimum margin validation should be enforced
+   */
+  static isMinMarginEnforcementEnabled(): boolean {
+    const config = TRADING_CONFIG.MARGIN?.ENFORCE_MIN_REQUIREMENTS
+    return config !== false
+  }
+
+  /**
    * Get maximum leverage for scale orders based on order count
    */
   static getMaxLeverageForScaleOrders(orderCount: number): number {
@@ -198,6 +212,9 @@ export class TradingConfigHelper {
    * Get minimum margin requirement based on leverage
    */
   static getMinMarginRequirement(leverage: number): number {
+    if (!this.isMinMarginEnforcementEnabled()) {
+      return 0
+    }
     if (leverage >= 30) return 200
     if (leverage >= 20) return 100
     return 0
@@ -206,3 +223,15 @@ export class TradingConfigHelper {
 
 // Export individual config sections for easier imports
 export const TIMING_CONFIG = TRADING_CONFIG.TIMING
+export const SZ_DECIMALS = Object.freeze(
+  Object.entries(COIN_PRECISION_CONFIG).reduce((acc, [coin, precision]) => {
+    acc[coin] = precision.szDecimals
+    return acc
+  }, {} as Record<string, number>)
+)
+export const PX_DECIMALS = Object.freeze(
+  Object.entries(COIN_PRECISION_CONFIG).reduce((acc, [coin, precision]) => {
+    acc[coin] = precision.pxDecimals
+    return acc
+  }, {} as Record<string, number>)
+)
