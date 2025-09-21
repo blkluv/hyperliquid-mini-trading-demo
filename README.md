@@ -2,6 +2,15 @@
 
 A simple trading interface for Hyperliquid that supports Market, Limit, Scale, and TWAP orders with advanced leverage and margin mode controls, real-time price updates, and sophisticated order management.
 
+## 🔄 Recent Updates
+
+> 📋 **[View Complete Features List](FEATURES_SUMMARY.md)** - Detailed breakdown of all 16+ major feature modules including precision handling, input validation, liquidation price calculation, and more!
+
+- **[Precision & Decimal Fix Demo](https://drive.google.com/file/d/1jZEvcNyBDtyQbFbmB4gEG_Gkl6RDAIIf/view?usp=drive_link)** - See the latest improvements for price and size decimal precision handling
+
+
+
+
 ## 🖼️ Interface Preview
 
 Here's what the trading interface looks like:
@@ -22,9 +31,7 @@ Watch these demonstration videos to understand the functionality:
 
 - **[Scale Order Demo](https://www.loom.com/share/5feaa6e04e904bc5bd75d53d2f387994?sid=c364f19f-f0f5-46b6-bb41-9dafb2a5d4b6)** - Learn how to place multiple orders at different price levels with size skew
 
-## 🔄 Recent Updates
 
-- **[Precision & Decimal Fix Demo](https://drive.google.com/file/d/1jZEvcNyBDtyQbFbmB4gEG_Gkl6RDAIIf/view?usp=drive_link)** - See the latest improvements for price and size decimal precision handling
 
 
 
@@ -47,7 +54,7 @@ Watch these demonstration videos to understand the functionality:
 - **Advanced UI**: Dark theme, toast notifications, responsive design
 - **Security**: Environment variable configuration for private keys
 
-> 📋 **[View Complete Features List](FEATURES_SUMMARY.md)** - Detailed breakdown of all 16+ major feature modules including precision handling, input validation, liquidation price calculation, and more!
+
 
 ## 🚀 Quick Start
 
