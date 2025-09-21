@@ -47,6 +47,8 @@ Watch these demonstration videos to understand the functionality:
 - **Advanced UI**: Dark theme, toast notifications, responsive design
 - **Security**: Environment variable configuration for private keys
 
+> 📋 **[View Complete Features List](FEATURES_SUMMARY.md)** - Detailed breakdown of all 16+ major feature modules including precision handling, input validation, liquidation price calculation, and more!
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -119,6 +121,7 @@ npm run test:coverage
 
 - **[Environment Variables Setup](ENV_SETUP.md)** - Complete setup guide
 - **[Test Coverage Report](src/__tests__/TEST_COVERAGE_REPORT.md)** - Testing details
+- **[Features Summary](FEATURES_SUMMARY.md)** - Complete list of all features and improvements
 
 ## 🛠️ Development
 
