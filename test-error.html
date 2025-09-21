@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Error Handling Test</title>
+</head>
+<body>
+    <h1>Error Handling Test</h1>
+    <button onclick="testErrorHandling()">Test Post-Only Error</button>
+    <div id="result"></div>
+
+    <script>
+        async function testErrorHandling() {
+            const resultDiv = document.getElementById('result');
+            
+            try {
+                const response = await fetch('http://localhost:3001/api/place-order', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        coin: 'BNB-PERP',
+                        is_buy: true,
+                        sz: '0.01',
+                        limit_px: '1051.9',
+                        reduce_only: false,
+                        order_type: { limit: { tif: 'Alo' } }
+                    })
+                });
+                
+                console.log('Response status:', response.status);
+                console.log('Response ok:', response.ok);
+                
+                if (!response.ok) {
+                    try {
+                        const errorData = await response.json();
+                        console.log('Error data:', errorData);
+                        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+                    } catch (parseError) {
+                        console.log('Parse error:', parseError);
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                }
+                
+                const data = await response.json();
+                resultDiv.innerHTML = '<p style="color: green;">Success: ' + JSON.stringify(data) + '</p>';
+                
+            } catch (error) {
+                console.log('Caught error:', error);
+                resultDiv.innerHTML = '<p style="color: red;">Error: ' + error.message + '</p>';
+            }
+        }
+    </script>
+</body>
+</html>

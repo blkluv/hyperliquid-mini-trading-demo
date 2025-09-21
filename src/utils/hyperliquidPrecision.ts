@@ -221,9 +221,10 @@ export class HyperliquidPrecision {
    * 格式化数字到指定小数位数
    */
   private static formatWithDecimals(num: number, decimals: number): string {
-    const formatted = num.toFixed(decimals)
-    // 始终保留配置要求的小数位数，以匹配官方前端展示
-    return formatted
+    // Use Math.ceil to match Hyperliquid's rounding behavior (round up)
+    const multiplier = Math.pow(10, decimals)
+    const rounded = Math.ceil(num * multiplier) / multiplier
+    return rounded.toFixed(decimals)
   }
 
   /**

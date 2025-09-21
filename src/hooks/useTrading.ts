@@ -215,7 +215,8 @@ export const useTrading = () => {
         const totalMarginUsed = parseFloat(walletBalance.totalMarginUsed || '0')
         const totalNotional = parseFloat(walletBalance.totalNtlPos || '0')
 
-        const transferRequirement = Math.max(totalMarginUsed, totalNotional * 0.1)
+        // Align available-to-trade with Hyperliquid UI: account value minus margin currently used
+        const transferRequirement = totalMarginUsed
         const availableToTrade = Math.max(0, accountValue - transferRequirement)
 
         // Get position for the currently selected coin
@@ -334,11 +335,11 @@ export const useTrading = () => {
       if (state.stopLossPrice && parseFloat(state.stopLossPrice) <= 0) {
         errors.push('Stop loss price must be greater than 0')
       }
-      if (state.takeProfitGain && (parseFloat(state.takeProfitGain) <= 0 || parseFloat(state.takeProfitGain) > 1000)) {
-        errors.push('Take profit gain must be between 0.01% and 1000%')
+      if (state.takeProfitGain && isNaN(parseFloat(state.takeProfitGain))) {
+        errors.push('Take profit gain must be a valid number')
       }
-      if (state.stopLossLoss && (parseFloat(state.stopLossLoss) <= 0 || parseFloat(state.stopLossLoss) > 100)) {
-        errors.push('Stop loss must be between 0.01% and 100%')
+      if (state.stopLossLoss && isNaN(parseFloat(state.stopLossLoss))) {
+        errors.push('Stop loss must be a valid number')
       }
     }
 
@@ -505,6 +506,24 @@ export const useTrading = () => {
     // Validate scale order parameters
     if (isNaN(startPrice) || isNaN(endPrice) || isNaN(orderCount) || orderCount <= 0) {
       setError('Please enter valid scale order parameters')
+      return
+    }
+
+    // Validate minimum order value for each sub-order
+    const avgPrice = (startPrice + endPrice) / 2
+    let subOrderUsdValue: number
+    
+    if (state.sizeUnit === 'USD') {
+      // For USD mode, each sub-order gets equal USD value
+      subOrderUsdValue = totalSize / orderCount
+    } else {
+      // For coin mode, calculate USD value using average price
+      const subOrderSize = totalSize / orderCount
+      subOrderUsdValue = subOrderSize * avgPrice
+    }
+    
+    if (!TradingConfigHelper.validateOrderValue(subOrderUsdValue, true)) {
+      setError(`Scale sub-order value too low: $${subOrderUsdValue.toFixed(2)} (minimum: $10.00)`)
       return
     }
 
@@ -825,7 +844,8 @@ export const useTrading = () => {
       const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin)
       const pxDecimals = assetInfo.pxDecimals
       const tickSize = pxDecimals > 0 ? Math.pow(10, -pxDecimals) : 1
-      const roundedPrice = Math.round(price / tickSize) * tickSize
+      // Use Math.ceil to match Hyperliquid's rounding behavior (round up)
+      const roundedPrice = Math.ceil(price / tickSize) * tickSize
       const decimalPlaces = pxDecimals > 0 ? pxDecimals : 0
       return roundedPrice.toFixed(decimalPlaces)
     }

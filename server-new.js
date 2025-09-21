@@ -910,6 +910,10 @@ app.post('/api/place-order', async (req, res) => {
       userMessage = 'Order value is too large. Please reduce the order quantity or price.'
     } else if (error.message.includes('Insufficient balance')) {
       userMessage = 'Insufficient account balance. Please check available funds.'
+    } else if (error.message.includes('Post only order would have immediately matched')) {
+      userMessage = 'Post only order would have immediately matched'
+    } else if (error.message.includes('Post-only order would have immediately matched')) {
+      userMessage = 'Post only order would have immediately matched'
     }
     
     res.status(500).json({ 
@@ -917,6 +921,8 @@ app.post('/api/place-order', async (req, res) => {
       originalError: error.message,
       suggestion: error.message.includes('80% away') 
         ? 'Suggestion: Adjust order price to be closer to current market price' 
+        : error.message.includes('Post only order would have immediately matched')
+        ? 'Suggestion: Adjust order price to avoid immediate matching, or remove Post-Only restriction'
         : 'Suggestion: Check order parameters and account status'
     })
   }
@@ -1639,8 +1645,9 @@ const formatPriceForTickSize = (price, coinName) => {
     
     // Calculate tick size based on pxDecimals
     const tickSize = Math.pow(10, -pxDecimals)
-  const roundedPrice = Math.round(price / tickSize) * tickSize
-  
+    // Use Math.ceil to match Hyperliquid's rounding behavior (round up)
+    const roundedPrice = Math.ceil(price / tickSize) * tickSize
+    
     // Format with appropriate decimal places based on pxDecimals
     return roundedPrice.toFixed(pxDecimals)
   } catch (error) {
@@ -1696,7 +1703,6 @@ const getSizePrecision = (increment) => {
 const getSzDecimalsFromMeta = (coin) => {
   try {
     if (!infoClient) {
-      console.warn('InfoClient not available, using default szDecimals')
       return getDefaultSzDecimals(coin)
     }
     
@@ -1709,7 +1715,7 @@ const getSzDecimalsFromMeta = (coin) => {
       }
     }
     
-    console.warn(`szDecimals not found for ${coin}, using default`)
+    // 静默回退到默认值，不显示警告
     return getDefaultSzDecimals(coin)
   } catch (error) {
     console.error(`Error getting szDecimals for ${coin}:`, error)
@@ -1791,12 +1797,15 @@ const distributeSubOrderSizes = (totalSize, intervals, coin) => {
     unitsPerOrder[i] += 1
   }
 
-  const subOrderSizes = unitsPerOrder.map(units => Number((units * increment).toFixed(precision)))
+  const subOrderSizes = unitsPerOrder.map(units => Number((units * roundedBaseSize).toFixed(precision)))
 
   const smallestOrder = Math.min(...subOrderSizes)
   if (smallestOrder < minSize) {
     throw new Error(`Each sub-order must be at least ${minSize} ${coin.replace('-PERP', '')}`)
   }
+
+  // Calculate increment based on the rounded base size
+  const increment = roundedBaseSize
 
   return {
     subOrderSizes,

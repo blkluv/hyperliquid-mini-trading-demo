@@ -293,7 +293,13 @@ const TradingInterface: React.FC = () => {
     } catch (error) {
       console.warn('Failed to format price with tick size, falling back to decimals:', error)
       const decimals = getCachedPxDecimals(coin)
-      return decimals <= 0 ? Math.round(price).toString() : price.toFixed(decimals)
+      if (decimals <= 0) {
+        return Math.ceil(price).toString()
+      }
+      // Use Math.ceil to match Hyperliquid's rounding behavior (round up)
+      const multiplier = Math.pow(10, decimals)
+      const rounded = Math.ceil(price * multiplier) / multiplier
+      return rounded.toFixed(decimals)
     }
   }, [formatPriceForTickSize, getCachedPxDecimals])
 
@@ -556,6 +562,21 @@ const TradingInterface: React.FC = () => {
     return isNaN(sizeValue) || sizeValue <= 0
   }
 
+  // Helper function to check if reduce-only order would increase position
+  const isReduceOnlyTooLarge = (): boolean => {
+    if (!state.reduceOnly || state.side !== 'buy') {
+      return false
+    }
+    
+    const positionMatch = currentCoinPosition.match(/(\d+\.?\d*)\s+(\w+)/)
+    if (positionMatch) {
+      const availablePosition = parseFloat(positionMatch[1])
+      return availablePosition >= 0 // Would increase position
+    }
+    
+    return false
+  }
+
   // Helper function to check if USD converts to coin size below minimum decimal
   const hasInsufficientCoinSize = (): boolean => {
     if (state.sizeUnit !== 'USD' || !state.size || !currentPrice) return false
@@ -732,6 +753,98 @@ const TradingInterface: React.FC = () => {
   const prevOrderTypeRef = useRef(state.orderType)
   const prevSelectedCoinRef = useRef(state.selectedCoin)
 
+  const getTpSlReferencePrice = React.useCallback((): number | null => {
+    if (state.orderType === 'limit') {
+      const parsedLimit = parseFloat(state.limitPrice)
+      if (!isNaN(parsedLimit) && parsedLimit > 0) {
+        return parsedLimit
+      }
+    }
+
+    if (typeof topCardPrice === 'number' && topCardPrice > 0) {
+      return topCardPrice
+    }
+
+    if (typeof currentPrice === 'number' && currentPrice > 0) {
+      return currentPrice
+    }
+
+    return null
+  }, [state.orderType, state.limitPrice, topCardPrice, currentPrice])
+
+const sanitizePriceInput = (
+  rawValue: string,
+  previousValue: string,
+  coin: string,
+  inputEl?: HTMLInputElement
+  ): string | null => {
+    const trimmedValue = rawValue.trim()
+    let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
+    numericValue = normalizeLeadingZeros(numericValue)
+
+    const coinForPrecision = coin || 'BTC-PERP'
+    let maxDecimals: number | undefined
+
+    try {
+      const precisionHint = typeof assetPrecision.pxDecimals === 'number'
+        ? assetPrecision.pxDecimals
+        : getCachedPxDecimals(coinForPrecision)
+
+      if (Number.isFinite(precisionHint) && precisionHint >= 0) {
+        maxDecimals = precisionHint
+      }
+    } catch (error) {
+      console.warn('⚠️ Failed to resolve pxDecimals during price change:', error)
+    }
+
+    if (!isValidDecimalInsertion(numericValue, previousValue, maxDecimals)) {
+      return null
+    }
+
+    const enforcedValue = enforceMaxDigits(numericValue, previousValue, inputEl)
+    if (enforcedValue === null) {
+      return null
+    }
+
+    let normalizedEnforced = normalizeLeadingZeros(enforcedValue)
+    const hadTrailingDot = normalizedEnforced.endsWith('.')
+    const parts = normalizedEnforced.split('.')
+    if (parts.length > 2) {
+      return null
+    }
+
+    if (typeof maxDecimals === 'number') {
+      if (maxDecimals === 0) {
+        normalizedEnforced = parts[0]
+      } else if (parts.length === 2) {
+        const truncatedDecimal = parts[1].substring(0, maxDecimals)
+        if (truncatedDecimal.length > 0) {
+          normalizedEnforced = `${parts[0]}.${truncatedDecimal}`
+        } else {
+          normalizedEnforced = hadTrailingDot ? `${parts[0]}.` : parts[0]
+        }
+      }
+    }
+
+    return normalizedEnforced
+  }
+
+  const handleReduceOnlyToggle = React.useCallback((checked: boolean) => {
+    setState(prev => ({
+      ...prev,
+      reduceOnly: checked,
+      takeProfitStopLoss: checked ? false : prev.takeProfitStopLoss
+    }))
+  }, [setState])
+
+  const handleTakeProfitStopLossToggle = React.useCallback((checked: boolean) => {
+    setState(prev => ({
+      ...prev,
+      takeProfitStopLoss: checked,
+      reduceOnly: checked ? false : prev.reduceOnly
+    }))
+  }, [setState])
+
   // Auto-update limit price only when switching to limit order or changing coin
   useEffect(() => {
     const orderTypeChangedToLimit = prevOrderTypeRef.current !== 'limit' && state.orderType === 'limit'
@@ -785,6 +898,7 @@ const TradingInterface: React.FC = () => {
           if (state.leverage > effectiveMaxLeverage) {
             console.log(`📉 Auto-adjusting leverage from ${state.leverage}x to ${effectiveMaxLeverage}x due to new limits`)
             setState(prev => ({ ...prev, leverage: effectiveMaxLeverage }))
+            storeLeveragePreference(state.selectedCoin, state.marginMode, effectiveMaxLeverage)
             
           }
           
@@ -819,6 +933,7 @@ const TradingInterface: React.FC = () => {
             if (state.leverage > available) {
               console.log(`📉 Auto-adjusting leverage from ${state.leverage}x to ${available}x due to position size`)
               setState(prev => ({ ...prev, leverage: available }))
+              storeLeveragePreference(state.selectedCoin, state.marginMode, available)
               
               // Show notification to user
               toast.success(`Leverage automatically adjusted to ${available}x due to position size`, {
@@ -1051,10 +1166,7 @@ const TradingInterface: React.FC = () => {
             const positionMatch = currentCoinPosition.match(/(\d+\.?\d*)\s+(\w+)/)
             if (positionMatch) {
               const availablePosition = parseFloat(positionMatch[1])
-              if (availablePosition >= 0) {
-                // Buy reduce-only order when position is positive or zero would increase position
-                errors.push('Reduce-only buy order would increase position. Use regular sell order to reduce position.')
-              }
+              // Don't add validation error - handle this in button logic instead
             } else {
               // If we can't parse position, show error for reduce-only buy orders
               errors.push('Cannot validate reduce-only buy order: Unable to parse current position. Please check your position and try again.')
@@ -1462,23 +1574,9 @@ const TradingInterface: React.FC = () => {
             break
             
           case 'scale':
-            // Scale orders: More conservative leverage due to multiple orders
-            if (state.leverage > 20) {
-              errors.push('Maximum leverage for scale orders is 20x (risk management)')
-            }
+            // Scale orders: No leverage restrictions
             if (state.leverage < 1) {
               errors.push('Minimum leverage is 1x')
-            }
-            
-            // Additional scale order leverage validation
-            if (state.scaleOrderCount && state.scaleOrderCount.trim() !== '') {
-              const orderCount = parseInt(state.scaleOrderCount.trim())
-              if (!isNaN(orderCount) && orderCount > 0) {
-                const maxLeverage = TradingConfigHelper.getMaxLeverageForScaleOrders(orderCount)
-                if (state.leverage > maxLeverage) {
-                  errors.push(`Maximum ${maxLeverage}x leverage allowed for scale orders with ${orderCount} orders`)
-                }
-              }
             }
             break
             
@@ -1557,31 +1655,44 @@ const TradingInterface: React.FC = () => {
 
     // Take Profit / Stop Loss validation
     if (state.takeProfitStopLoss) {
+      let tpPrice: number | null = null
+      let slPrice: number | null = null
+
       if (touchedFields.has('takeProfitPrice') && state.takeProfitPrice && state.takeProfitPrice.trim() !== '') {
-        const tpPrice = parseFloat(state.takeProfitPrice.trim())
+        tpPrice = parseFloat(state.takeProfitPrice.trim())
         if (isNaN(tpPrice) || tpPrice <= 0) {
           errors.push('Take profit price must be a valid positive number')
+          tpPrice = null
         }
       }
       
       if (touchedFields.has('stopLossPrice') && state.stopLossPrice && state.stopLossPrice.trim() !== '') {
-        const slPrice = parseFloat(state.stopLossPrice.trim())
+        slPrice = parseFloat(state.stopLossPrice.trim())
         if (isNaN(slPrice) || slPrice <= 0) {
           errors.push('Stop loss price must be a valid positive number')
+          slPrice = null
         }
       }
-      
-      if (touchedFields.has('takeProfitGain') && state.takeProfitGain && state.takeProfitGain.trim() !== '') {
-        const tpGain = parseFloat(state.takeProfitGain.trim())
-        if (isNaN(tpGain) || tpGain <= 0 || tpGain > 1000) {
-          errors.push(`Take profit gain must be between 0.01% and ${1000}%`)
+
+      const midPrice = typeof topCardPrice === 'number' && topCardPrice > 0
+        ? topCardPrice
+        : (typeof currentPrice === 'number' && currentPrice > 0 ? currentPrice : null)
+
+      if (midPrice) {
+        if (tpPrice !== null) {
+          if (state.side === 'buy' && tpPrice <= midPrice) {
+            errors.push('TP price must be higher than mid.')
+          } else if (state.side === 'sell' && tpPrice >= midPrice) {
+            errors.push('TP price must be lower than mid.')
+          }
         }
-      }
-      
-      if (touchedFields.has('stopLossLoss') && state.stopLossLoss && state.stopLossLoss.trim() !== '') {
-        const slLoss = parseFloat(state.stopLossLoss.trim())
-        if (isNaN(slLoss) || slLoss <= 0 || slLoss > 100) {
-          errors.push(`Stop loss must be between 0.01% and ${100}%`)
+
+        if (slPrice !== null) {
+          if (state.side === 'buy' && slPrice >= midPrice) {
+            errors.push('SL price must be lower than mid.')
+          } else if (state.side === 'sell' && slPrice <= midPrice) {
+            errors.push('SL price must be higher than mid.')
+          }
         }
       }
     }
@@ -1651,32 +1762,54 @@ const handleSizeChange = (value: string, inputEl?: HTMLInputElement) => {
 
 const handleLimitPriceChange = (value: string, inputEl?: HTMLInputElement) => {
     console.log(`💰 LIMIT PRICE Change - Input: "${value}"`)
-    // Normalize input: trim spaces, only allow numeric input (including decimal point)
-    const trimmedValue = value.trim()
-    let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
-  numericValue = normalizeLeadingZeros(numericValue)
-  console.log(`💰 LIMIT PRICE Change - After normalization: "${numericValue}"`)
-
-  console.log(`💰 LIMIT PRICE Change - Before validation: "${numericValue}"`)
-  if (!isValidDecimalInsertion(numericValue, state.limitPrice || '', undefined)) {
-    console.log(`💰 LIMIT PRICE Change - Validation failed, returning early`)
-    return
-  }
-  console.log(`💰 LIMIT PRICE Change - Validation passed`)
-
-  const enforcedValue = enforceMaxDigits(numericValue, state.limitPrice || '', inputEl)
-  if (enforcedValue === null) {
-    return
-  }
-  const normalizedEnforced = normalizeLeadingZeros(enforcedValue)
-
-  const parts = normalizedEnforced.split('.')
-  if (parts.length > 2) {
-    return
-  }
+    const normalizedEnforced = sanitizePriceInput(value, state.limitPrice || '', state.selectedCoin, inputEl)
+    if (normalizedEnforced === null) {
+      return
+    }
     
     markFieldAsTouched('limitPrice')
-  setState(prev => ({ ...prev, limitPrice: normalizedEnforced }))
+  setState(prev => ({ ...prev, limitPrice: normalizedEnforced, limitPriceManuallySet: true }))
+}
+
+const getLeverageStorageKey = (coin: string, marginMode: 'isolated' | 'cross') => {
+  const normalizedCoin = (coin || 'UNKNOWN').toUpperCase()
+  return `hyperliquid.leverage.${normalizedCoin}.${marginMode}`
+}
+
+const loadStoredLeveragePreference = (coin: string, marginMode: 'isolated' | 'cross'): number | null => {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  try {
+    const key = getLeverageStorageKey(coin, marginMode)
+    const raw = window.localStorage.getItem(key)
+    if (!raw) {
+      return null
+    }
+    const parsed = parseFloat(raw)
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+  } catch (error) {
+    console.warn('⚠️ Failed to load stored leverage preference:', error)
+    return null
+  }
+}
+
+const storeLeveragePreference = (coin: string, marginMode: 'isolated' | 'cross', leverage: number) => {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  if (!Number.isFinite(leverage) || leverage <= 0) {
+    return
+  }
+
+  try {
+    const key = getLeverageStorageKey(coin, marginMode)
+    window.localStorage.setItem(key, leverage.toString())
+  } catch (error) {
+    console.warn('⚠️ Failed to store leverage preference:', error)
+  }
 }
 
 const handleScaleStartPriceChange = (value: string, inputEl?: HTMLInputElement) => {
@@ -1816,14 +1949,21 @@ const handleTwapNumericChange = (field: 'twapRunningTimeHours' | 'twapRunningTim
 const handleTPSLChange = (field: 'takeProfitPrice' | 'stopLossPrice' | 'takeProfitGain' | 'stopLossLoss', value: string, inputEl?: HTMLInputElement) => {
     // Normalize input: trim spaces, only allow numeric input (including decimal point)
     const trimmedValue = value.trim()
-  let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
-  numericValue = normalizeLeadingZeros(numericValue)
-
+  const isSignedField = field === 'takeProfitGain' || field === 'stopLossLoss'
   const previousValue = String((state as unknown as Record<string, string | undefined>)[field] ?? '')
+  const hasLeadingMinus = isSignedField && trimmedValue.startsWith('-')
+
+  let numericCore = trimmedValue.replace(/[^0-9.]/g, '')
+  numericCore = normalizeLeadingZeros(numericCore)
+
+  let numericValue = numericCore
+  if (isSignedField && hasLeadingMinus) {
+    numericValue = numericCore !== '' ? `-${numericCore}` : '-'
+  }
 
   // Set max decimals based on field type
   let maxDecimals: number | null = null
-  if (field === 'takeProfitGain' || field === 'stopLossLoss') {
+  if (isSignedField) {
     maxDecimals = 2 // Limit gain/loss to 2 decimal places
   } else if (field === 'takeProfitPrice' || field === 'stopLossPrice') {
     // Use coin's price decimal precision for TP/SL prices
@@ -1842,11 +1982,19 @@ const handleTPSLChange = (field: 'takeProfitPrice' | 'stopLossPrice' | 'takeProf
     return
   }
 
-  const enforcedValue = enforceMaxDigits(numericValue, previousValue || '', inputEl)
-  if (enforcedValue === null) {
-    return
+  if (isSignedField) {
+    const digitsOnly = numericValue.replace(/[^0-9]/g, '')
+    if (digitsOnly.length > 12) {
+      moveCursorToEnd(inputEl)
+      return
+    }
+  } else {
+    const enforcedValue = enforceMaxDigits(numericValue, previousValue || '', inputEl)
+    if (enforcedValue === null) {
+      return
+    }
+    numericValue = normalizeLeadingZeros(enforcedValue)
   }
-  numericValue = normalizeLeadingZeros(enforcedValue)
 
     const parts = numericValue.split('.')
   if (parts.length > 2) {
@@ -1865,20 +2013,28 @@ const handleTPSLChange = (field: 'takeProfitPrice' | 'stopLossPrice' | 'takeProf
   }
     
     markFieldAsTouched(field)
-    
+
+    const referencePrice = getTpSlReferencePrice()
+
     setState(prev => {
     const newState = { ...prev, [field]: numericValue }
 
-    if (typeof topCardPrice === 'number' && numericValue) {
+    if (referencePrice && numericValue) {
       if (field === 'takeProfitGain') {
-        const gainPercent = parseFloat(numericValue) / 100
-        if (!isNaN(gainPercent)) {
-          newState.takeProfitPrice = formatPriceWithPrecision(topCardPrice * (prev.side === 'buy' ? 1 + gainPercent : 1 - gainPercent), state.selectedCoin)
+        const gainFraction = parseFloat(numericValue) / 100
+        if (!isNaN(gainFraction)) {
+          const leverage = Math.max(prev.leverage ?? 1, 1)
+          const priceDelta = gainFraction / leverage
+          const adjustedPrice = referencePrice * (prev.side === 'buy' ? 1 + priceDelta : 1 - priceDelta)
+          newState.takeProfitPrice = formatPriceWithPrecision(adjustedPrice, state.selectedCoin)
         }
       } else if (field === 'stopLossLoss') {
-        const lossPercent = parseFloat(numericValue) / 100
-        if (!isNaN(lossPercent)) {
-          newState.stopLossPrice = formatPriceWithPrecision(topCardPrice * (prev.side === 'buy' ? 1 - lossPercent : 1 + lossPercent), state.selectedCoin)
+        const lossFraction = parseFloat(numericValue) / 100
+        if (!isNaN(lossFraction)) {
+          const leverage = Math.max(prev.leverage ?? 1, 1)
+          const priceDelta = lossFraction / leverage
+          const adjustedPrice = referencePrice * (prev.side === 'buy' ? 1 - priceDelta : 1 + priceDelta)
+          newState.stopLossPrice = formatPriceWithPrecision(adjustedPrice, state.selectedCoin)
           }
         }
       }
@@ -1889,233 +2045,126 @@ const handleTPSLChange = (field: 'takeProfitPrice' | 'stopLossPrice' | 'takeProf
 
 const handleTakeProfitPriceChange = (value: string, inputEl?: HTMLInputElement) => {
     console.log(`🔍 TP Price Change - Input: "${value}"`)
-    const trimmedValue = value.trim()
-    let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
-  numericValue = normalizeLeadingZeros(numericValue)
-  console.log(`🔍 TP Price Change - After normalization: "${numericValue}"`)
-
-  // Get price decimal precision
-  let maxDecimals: number | null = null
-  try {
-    const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(state.selectedCoin)
-    maxDecimals = assetInfo.pxDecimals
-    console.log(`🔍 TP PRICE precision for ${state.selectedCoin}: ${maxDecimals} decimals`)
-    console.log(`🔍 TP PRICE Asset info:`, assetInfo)
-    console.log(`🔍 TP PRICE - szDecimals: ${assetInfo.szDecimals}, pxDecimals: ${assetInfo.pxDecimals}`)
-  } catch (error) {
-    console.error('Error getting PRICE precision for TP price:', error)
-    maxDecimals = 4
-  }
-
-  console.log(`🔍 TP Price Change - Before validation: "${numericValue}", maxDecimals: ${maxDecimals}`)
-  if (!isValidDecimalInsertion(numericValue, state.takeProfitPrice || '', maxDecimals)) {
-    console.log(`🔍 TP Price Change - Validation failed, returning early`)
-    moveCursorToEnd(inputEl)
-    return
-  }
-  console.log(`🔍 TP Price Change - Validation passed`)
-
-      const enforcedValue = enforceMaxDigits(numericValue, state.takeProfitPrice || '', inputEl)
-  console.log(`🔍 TP Price Change - After enforceMaxDigits: "${enforcedValue}"`)
-  if (enforcedValue === null) {
-    console.log(`🔍 TP Price Change - enforceMaxDigits returned null, returning early`)
-    return
-  }
-
-  const normalizedEnforced = normalizeLeadingZeros(enforcedValue)
-
-  const parts = normalizedEnforced.split('.')
-  if (parts.length > 2) {
-    moveCursorToEnd(inputEl)
-    return
-  }
-
-  // Apply Hyperliquid precision formatting when user finishes typing
-  // BUT only if the input is complete (not during typing)
-  let formattedValue = normalizedEnforced
-  if (normalizedEnforced && parseFloat(normalizedEnforced) > 0 && !normalizedEnforced.endsWith('.')) {
-    try {
-      // Use Hyperliquid precision formatting only for complete numbers
-      formattedValue = formatPriceWithPrecision(parseFloat(normalizedEnforced), state.selectedCoin)
-      console.log(`🔧 TP price formatted: ${normalizedEnforced} -> ${formattedValue}`)
-    } catch (error) {
-      console.warn('Failed to format TP price with precision, using original:', error)
-      formattedValue = normalizedEnforced
+    const normalizedEnforced = sanitizePriceInput(value, state.takeProfitPrice || '', state.selectedCoin, inputEl)
+    if (normalizedEnforced === null) {
+      return
     }
-  }
 
-  // Limit decimal places according to price precision
-  if (parts.length === 2 && maxDecimals !== null) {
-    const decimalPart = parts[1]
-    if (decimalPart.length > maxDecimals) {
-      parts[1] = decimalPart.substring(0, maxDecimals)
-      const truncatedValue = parts.join('.')
-      moveCursorToEnd(inputEl)
-      setState(prev => {
-        const newState = { ...prev, takeProfitPrice: truncatedValue }
-        
-        // Calculate corresponding gain percentage when TP price is updated
-        if (typeof topCardPrice === 'number' && truncatedValue && parseFloat(truncatedValue) > 0) {
-          const tpPrice = parseFloat(truncatedValue)
-          let gainPercent: number
-          
-          if (prev.side === 'buy') {
-            gainPercent = ((tpPrice - topCardPrice) / topCardPrice) * 100
-          } else {
-            gainPercent = ((topCardPrice - tpPrice) / topCardPrice) * 100
-          }
-          
-          if (!isNaN(gainPercent)) {
-            newState.takeProfitGain = gainPercent.toFixed(2)
-          }
-        }
-        
-        return newState
-      })
-        return
-    }
-  }
+    const referencePrice = getTpSlReferencePrice()
     
     markFieldAsTouched('takeProfitPrice')
-  setState(prev => {
-    const newState = { ...prev, takeProfitPrice: formattedValue }
-    
-    // Calculate corresponding gain percentage when TP price is updated
-    if (typeof topCardPrice === 'number' && formattedValue && parseFloat(formattedValue) > 0) {
-      const tpPrice = parseFloat(formattedValue)
-      let gainPercent: number
+    setState(prev => {
+      const newState = { ...prev, takeProfitPrice: normalizedEnforced }
       
-      if (prev.side === 'buy') {
-        gainPercent = ((tpPrice - topCardPrice) / topCardPrice) * 100
-      } else {
-        gainPercent = ((topCardPrice - tpPrice) / topCardPrice) * 100
+      // Calculate corresponding gain percentage when TP price is updated
+      if (referencePrice && normalizedEnforced && parseFloat(normalizedEnforced) > 0) {
+        const tpPrice = parseFloat(normalizedEnforced)
+        let gainPercent: number
+        
+        const leverage = Math.max(prev.leverage ?? 1, 1)
+        // Calculate directional percentage change from reference price and scale by leverage
+        if (prev.side === 'buy') {
+          gainPercent = ((tpPrice - referencePrice) / referencePrice) * 100 * leverage
+        } else {
+          gainPercent = ((referencePrice - tpPrice) / referencePrice) * 100 * leverage
+        }
+        
+        if (!isNaN(gainPercent)) {
+          newState.takeProfitGain = gainPercent.toFixed(2)
+        }
       }
       
-      if (!isNaN(gainPercent)) {
-        newState.takeProfitGain = gainPercent.toFixed(2)
-      }
-    }
-    
-    return newState
-  })
+      return newState
+    })
 }
 
 const handleStopLossPriceChange = (value: string, inputEl?: HTMLInputElement) => {
     console.log(`🔍 SL Price Change - Input: "${value}"`)
-    const trimmedValue = value.trim()
-    let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
-  numericValue = normalizeLeadingZeros(numericValue)
-  console.log(`🔍 SL Price Change - After normalization: "${numericValue}"`)
-
-  // Get price decimal precision
-  let maxDecimals: number | null = null
-  try {
-    const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(state.selectedCoin)
-    maxDecimals = assetInfo.pxDecimals
-    console.log(`🔍 SL PRICE precision for ${state.selectedCoin}: ${maxDecimals} decimals`)
-    console.log(`🔍 SL PRICE Asset info:`, assetInfo)
-    console.log(`🔍 SL PRICE - szDecimals: ${assetInfo.szDecimals}, pxDecimals: ${assetInfo.pxDecimals}`)
-  } catch (error) {
-    console.error('Error getting PRICE precision for SL price:', error)
-    maxDecimals = 4
-  }
-
-  console.log(`🔍 SL Price Change - Before validation: "${numericValue}", maxDecimals: ${maxDecimals}`)
-  if (!isValidDecimalInsertion(numericValue, state.stopLossPrice || '', maxDecimals)) {
-    console.log(`🔍 SL Price Change - Validation failed, returning early`)
-    moveCursorToEnd(inputEl)
-    return
-  }
-  console.log(`🔍 SL Price Change - Validation passed`)
-
-      const enforcedValue = enforceMaxDigits(numericValue, state.stopLossPrice || '', inputEl)
-  console.log(`🔍 SL Price Change - After enforceMaxDigits: "${enforcedValue}"`)
-  if (enforcedValue === null) {
-    console.log(`🔍 SL Price Change - enforceMaxDigits returned null, returning early`)
-    return
-  }
-
-  const normalizedEnforced = normalizeLeadingZeros(enforcedValue)
-
-  const parts = normalizedEnforced.split('.')
-  if (parts.length > 2) {
-    moveCursorToEnd(inputEl)
-    return
-  }
-
-  // Apply Hyperliquid precision formatting when user finishes typing
-  // BUT only if the input is complete (not during typing)
-  let formattedValue = normalizedEnforced
-  if (normalizedEnforced && parseFloat(normalizedEnforced) > 0 && !normalizedEnforced.endsWith('.')) {
-    try {
-      // Use Hyperliquid precision formatting only for complete numbers
-      formattedValue = formatPriceWithPrecision(parseFloat(normalizedEnforced), state.selectedCoin)
-      console.log(`🔧 SL price formatted: ${normalizedEnforced} -> ${formattedValue}`)
-    } catch (error) {
-      console.warn('Failed to format SL price with precision, using original:', error)
-      formattedValue = normalizedEnforced
-    }
-  }
-
-  // Limit decimal places according to price precision
-  if (parts.length === 2 && maxDecimals !== null) {
-    const decimalPart = parts[1]
-    if (decimalPart.length > maxDecimals) {
-      parts[1] = decimalPart.substring(0, maxDecimals)
-      const truncatedValue = parts.join('.')
-      moveCursorToEnd(inputEl)
-      setState(prev => {
-        const newState = { ...prev, stopLossPrice: truncatedValue }
-        
-        // Calculate corresponding loss percentage when SL price is updated
-        if (typeof topCardPrice === 'number' && truncatedValue && parseFloat(truncatedValue) > 0) {
-          const slPrice = parseFloat(truncatedValue)
-          let lossPercent: number
-          
-          if (prev.side === 'buy') {
-            lossPercent = ((topCardPrice - slPrice) / topCardPrice) * 100
-          } else {
-            lossPercent = ((slPrice - topCardPrice) / topCardPrice) * 100
-          }
-          
-          if (!isNaN(lossPercent)) {
-            newState.stopLossLoss = lossPercent.toFixed(2)
-          }
-        }
-        
-        return newState
-      })
+    const normalizedEnforced = sanitizePriceInput(value, state.stopLossPrice || '', state.selectedCoin, inputEl)
+    if (normalizedEnforced === null) {
       return
     }
-  }
+
+    const referencePrice = getTpSlReferencePrice()
     
     markFieldAsTouched('stopLossPrice')
-  setState(prev => {
-    const newState = { ...prev, stopLossPrice: formattedValue }
-    
-    // Calculate corresponding loss percentage when SL price is updated
-    if (typeof topCardPrice === 'number' && formattedValue && parseFloat(formattedValue) > 0) {
-      const slPrice = parseFloat(formattedValue)
-      let lossPercent: number
+    setState(prev => {
+      const newState = { ...prev, stopLossPrice: normalizedEnforced }
       
-      if (prev.side === 'buy') {
-        lossPercent = ((topCardPrice - slPrice) / topCardPrice) * 100
-      } else {
-        lossPercent = ((slPrice - topCardPrice) / topCardPrice) * 100
+      // Calculate corresponding loss percentage when SL price is updated
+      if (referencePrice && normalizedEnforced && parseFloat(normalizedEnforced) > 0) {
+        const slPrice = parseFloat(normalizedEnforced)
+        let lossPercent: number
+        
+        const leverage = Math.max(prev.leverage ?? 1, 1)
+        if (prev.side === 'buy') {
+          lossPercent = ((referencePrice - slPrice) / referencePrice) * 100 * leverage
+        } else {
+          lossPercent = ((slPrice - referencePrice) / referencePrice) * 100 * leverage
+        }
+        
+        if (!isNaN(lossPercent)) {
+          newState.stopLossLoss = lossPercent.toFixed(2)
+        }
       }
       
-      if (!isNaN(lossPercent)) {
-        newState.stopLossLoss = lossPercent.toFixed(2)
-      }
-    }
-    
-    return newState
-  })
+      return newState
+    })
 }
 
-// Missing blur handlers
+// Blur handlers
 const handleLimitPriceBlur = () => {
-  // Optional: Add any blur-specific logic here
+  if (!state.limitPrice || state.limitPrice.trim() === '') {
+    return
+  }
+
+  const parsed = parseFloat(state.limitPrice)
+  if (isNaN(parsed) || parsed <= 0) {
+    return
+  }
+
+  try {
+    const formatted = formatPriceForTickSize(parsed, state.selectedCoin)
+    setState(prev => ({ ...prev, limitPrice: formatted, limitPriceManuallySet: true }))
+  } catch (error) {
+    console.warn('⚠️ Failed to normalize limit price on blur:', error)
+  }
+}
+
+const handleTakeProfitPriceBlur = () => {
+  if (!state.takeProfitPrice || state.takeProfitPrice.trim() === '') {
+    return
+  }
+
+  const parsed = parseFloat(state.takeProfitPrice)
+  if (isNaN(parsed) || parsed <= 0) {
+    return
+  }
+
+  try {
+    const formatted = formatPriceForTickSize(parsed, state.selectedCoin)
+    setState(prev => ({ ...prev, takeProfitPrice: formatted }))
+  } catch (error) {
+    console.warn('⚠️ Failed to normalize TP price on blur:', error)
+  }
+}
+
+const handleStopLossPriceBlur = () => {
+  if (!state.stopLossPrice || state.stopLossPrice.trim() === '') {
+    return
+  }
+
+  const parsed = parseFloat(state.stopLossPrice)
+  if (isNaN(parsed) || parsed <= 0) {
+    return
+  }
+
+  try {
+    const formatted = formatPriceForTickSize(parsed, state.selectedCoin)
+    setState(prev => ({ ...prev, stopLossPrice: formatted }))
+  } catch (error) {
+    console.warn('⚠️ Failed to normalize SL price on blur:', error)
+  }
 }
 
 const handleScaleStartPriceBlur = () => {
@@ -2126,13 +2175,6 @@ const handleScaleEndPriceBlur = () => {
   // Optional: Add any blur-specific logic here
 }
 
-const handleTakeProfitPriceBlur = () => {
-  // Optional: Add any blur-specific logic here
-}
-
-const handleStopLossPriceBlur = () => {
-  // Optional: Add any blur-specific logic here
-  }
 
   const handleCoinChange = async (coin: string) => {
     markFieldAsTouched('selectedCoin')
@@ -2148,11 +2190,18 @@ const handleStopLossPriceBlur = () => {
       scaleEndPrice: '',
       takeProfitPrice: '',
       stopLossPrice: '',
+      takeProfitGain: '',
+      stopLossLoss: '',
       // Reset size unit to coin unit (not USD)
       sizeUnit: coin.replace('-PERP', ''),
       // Clear touched fields for price/size inputs
       limitPriceManuallySet: false
     }))
+
+    const storedLeverage = loadStoredLeveragePreference(coin, state.marginMode)
+    if (storedLeverage !== null) {
+      setState(prev => ({ ...prev, leverage: storedLeverage }))
+    }
     
     // Update position for the selected coin immediately
     try {
@@ -2200,6 +2249,7 @@ const handleStopLossPriceBlur = () => {
             if (positionLeverage && !isNaN(parseFloat(positionLeverage))) {
               const leverage = parseFloat(positionLeverage)
               setState(prev => ({ ...prev, leverage }))
+              storeLeveragePreference(coin, state.marginMode, leverage)
               toast.success(`Leverage updated to ${leverage}x for ${coin}`, {
                 duration: 3000,
                 style: {
@@ -2215,9 +2265,15 @@ const handleStopLossPriceBlur = () => {
               const coinName = coin.replace('-PERP', '')
               const leverageData = await leverageService.getLeverageInfo(coinName)
               const maxLeverage = leverageData.maxLeverage
-              
-              setState(prev => ({ ...prev, leverage: maxLeverage }))
-              console.log(`📊 No position for ${coin}, setting leverage to max: ${maxLeverage}x`)
+
+              const stored = loadStoredLeveragePreference(coin, state.marginMode)
+              const leverageToApply = stored !== null
+                ? Math.min(Math.max(stored, 1), maxLeverage)
+                : maxLeverage
+
+              setState(prev => ({ ...prev, leverage: leverageToApply }))
+              storeLeveragePreference(coin, state.marginMode, leverageToApply)
+              console.log(`📊 No position for ${coin}, applying leverage: ${leverageToApply}x (max ${maxLeverage}x)`) 
             } catch (leverageError) {
               console.error('Failed to get max leverage for coin:', leverageError)
               // Keep current leverage as fallback
@@ -2229,9 +2285,15 @@ const handleStopLossPriceBlur = () => {
             const coinName = coin.replace('-PERP', '')
             const leverageData = await leverageService.getLeverageInfo(coinName)
             const maxLeverage = leverageData.maxLeverage
-            
-            setState(prev => ({ ...prev, leverage: maxLeverage }))
-            console.log(`📊 No clearinghouse state, setting leverage to max: ${maxLeverage}x`)
+
+            const stored = loadStoredLeveragePreference(coin, state.marginMode)
+            const leverageToApply = stored !== null
+              ? Math.min(Math.max(stored, 1), maxLeverage)
+              : maxLeverage
+
+            setState(prev => ({ ...prev, leverage: leverageToApply }))
+            storeLeveragePreference(coin, state.marginMode, leverageToApply)
+            console.log(`📊 No clearinghouse state, applying leverage: ${leverageToApply}x (max ${maxLeverage}x)`) 
           } catch (leverageError) {
             console.error('Failed to get max leverage for coin:', leverageError)
             // Keep current leverage as fallback
@@ -2370,10 +2432,9 @@ const handleStopLossPriceBlur = () => {
               const derivedTransferRequirement =
                 typeof rawTransferRequirement === 'number' && Number.isFinite(rawTransferRequirement)
                   ? rawTransferRequirement
-                  : Math.max(
-                      accountInfo.marginRequired || 0,
-                      (accountInfo.totalNotional || 0) * 0.1
-                    )
+                  : (typeof accountInfo.marginRequired === 'number' && Number.isFinite(accountInfo.marginRequired)
+                      ? accountInfo.marginRequired
+                      : 0)
 
               const accountValue =
                 typeof accountInfo.accountValue === 'number' && Number.isFinite(accountInfo.accountValue)
@@ -2568,6 +2629,7 @@ const handleStopLossPriceBlur = () => {
     
     // Update local state immediately for UI responsiveness
     setState(prev => ({ ...prev, leverage }))
+    storeLeveragePreference(state.selectedCoin, state.marginMode, leverage)
     
     // Set up delayed API call
     const timeout = setTimeout(async () => {
@@ -2607,6 +2669,12 @@ const handleStopLossPriceBlur = () => {
   const handleMarginModeChange = async (marginMode: 'isolated' | 'cross') => {
     try {
       await updateMarginMode(marginMode)
+      const stored = loadStoredLeveragePreference(state.selectedCoin, marginMode)
+      if (stored !== null) {
+        setState(prev => ({ ...prev, leverage: stored }))
+      } else {
+        storeLeveragePreference(state.selectedCoin, marginMode, state.leverage)
+      }
       toast.success(`Margin mode updated to ${marginMode}`)
     } catch (err) {
       console.error('Failed to update margin mode:', err)
@@ -2867,10 +2935,16 @@ const handleStopLossPriceBlur = () => {
                   (() => {
                     try {
                       const formattedPrice = formatHyperliquidPriceSync(currentPrice, state.selectedCoin)
-                      return `$${formattedPrice}`
+                      // Add comma formatting to the precision-formatted price
+                      const numericPrice = parseFloat(formattedPrice)
+                      // Get coin's decimal precision for comma formatting
+                      const pxDecimals = getCachedPxDecimals(state.selectedCoin)
+                      return `$${formatNumberWithCommas(numericPrice, pxDecimals)}`
                     } catch (error) {
                       console.error('Error formatting current price:', error)
-                      return `$${currentPrice.toLocaleString()}`
+                      // Get coin's decimal precision for comma formatting
+                      const pxDecimals = getCachedPxDecimals(state.selectedCoin)
+                      return `$${formatNumberWithCommas(currentPrice, pxDecimals)}`
                     }
                   })()
                 ) : priceConnected ? (
@@ -2957,9 +3031,15 @@ const handleStopLossPriceBlur = () => {
                       (() => {
                         try {
                           const formattedPrice = formatHyperliquidPriceSync(coinPrice, coin.symbol)
-                          return `$${formattedPrice}`
+                          // Add comma formatting to the precision-formatted price
+                          const numericPrice = parseFloat(formattedPrice)
+                          // Get coin's decimal precision for comma formatting
+                          const pxDecimals = getCachedPxDecimals(coin.symbol)
+                          return `$${formatNumberWithCommas(numericPrice, pxDecimals)}`
                         } catch (error) {
-                          return `$${coinPrice.toLocaleString()}`
+                          // Get coin's decimal precision for comma formatting
+                          const pxDecimals = getCachedPxDecimals(coin.symbol)
+                          return `$${formatNumberWithCommas(coinPrice, pxDecimals)}`
                         }
                       })()
                     ) : (
@@ -3357,12 +3437,47 @@ const handleStopLossPriceBlur = () => {
             <div className="flex gap-2">
               <input
                 type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
+                inputMode="decimal"
+                pattern="[0-9.\-]*"
                 placeholder="Limit Price"
                 value={state.limitPrice}
                 onChange={(e) => handleLimitPriceChange(e.target.value, e.currentTarget)}
                 onBlur={handleLimitPriceBlur}
+                onKeyDown={(e) => {
+                  try {
+                    const pxDecimals = (() => {
+                      if (typeof assetPrecision.pxDecimals === 'number') {
+                        return assetPrecision.pxDecimals
+                      }
+                      return getCachedPxDecimals(state.selectedCoin || 'BTC-PERP')
+                    })()
+
+                    if (!Number.isFinite(pxDecimals)) {
+                      return
+                    }
+
+                    if (pxDecimals === 0 && e.key === '.') {
+                      e.preventDefault()
+                      return
+                    }
+
+                    const currentValue = e.currentTarget.value
+                    const cursorPosition = e.currentTarget.selectionStart ?? currentValue.length
+                    const decimalIndex = currentValue.indexOf('.')
+
+                    if (decimalIndex !== -1 && cursorPosition > decimalIndex) {
+                      const decimalPlaces = cursorPosition - decimalIndex - 1
+                      const allowed = typeof pxDecimals === 'number' ? pxDecimals : undefined
+                      const isNavigationKey = e.key === 'Backspace' || e.key === 'Delete' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Tab'
+
+                      if (typeof allowed === 'number' && decimalPlaces >= allowed && !isNavigationKey) {
+                        e.preventDefault()
+                      }
+                    }
+                  } catch (error) {
+                    console.warn('⚠️ Could not enforce limit price decimal precision on keydown:', error)
+                  }
+                }}
                 className="flex-1 px-3 py-2 bg-dark-border border border-gray-600 rounded text-white placeholder-gray-400 focus:outline-none focus:border-teal-primary"
               />
               <button
@@ -3499,7 +3614,7 @@ const handleStopLossPriceBlur = () => {
                 <input
                   type="checkbox"
                   checked={state.reduceOnly}
-                  onChange={(e) => setState(prev => ({ ...prev, reduceOnly: e.target.checked }))}
+                  onChange={(e) => handleReduceOnlyToggle(e.target.checked)}
                   className="w-4 h-4 text-teal-primary bg-dark-border border-gray-600 rounded focus:ring-teal-primary focus:ring-2"
                 />
                 <span className="text-sm text-gray-400">Reduce Only</span>
@@ -3602,10 +3717,10 @@ const handleStopLossPriceBlur = () => {
               <div className="text-sm text-gray-400">Running Time (5m - 24h)</div>
               <div className="flex gap-2">
                 <div className="flex-1 relative">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
+              <input
+                type="text"
+                inputMode="decimal"
+                pattern="[0-9.\-]*"
                     value={state.twapRunningTimeHours}
                     onChange={(e) => handleTwapNumericChange('twapRunningTimeHours', e.target.value, e.currentTarget)}
                     onKeyDown={(e) => {
@@ -3615,8 +3730,8 @@ const handleStopLossPriceBlur = () => {
                       }
                     }}
                     placeholder="0"
-                    className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent focus:outline-none focus:border-teal-primary placeholder-transparent"
-                    style={{ color: 'transparent' }}
+                    className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent text-right focus:outline-none focus:border-teal-primary placeholder-transparent"
+                    style={{ color: 'transparent', caretColor: '#ffffff' }}
                   />
                   <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
                     <span className="text-gray-400 text-sm">Hour(s)</span>
@@ -3624,10 +3739,10 @@ const handleStopLossPriceBlur = () => {
                   </div>
                 </div>
                 <div className="flex-1 relative">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
+              <input
+                type="text"
+                inputMode="decimal"
+                pattern="[0-9.]*"
                     value={state.twapRunningTimeMinutes}
                     onChange={(e) => handleTwapNumericChange('twapRunningTimeMinutes', e.target.value, e.currentTarget)}
                     onKeyDown={(e) => {
@@ -3637,8 +3752,8 @@ const handleStopLossPriceBlur = () => {
                       }
                     }}
                     placeholder="0"
-                    className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent focus:outline-none focus:border-teal-primary placeholder-transparent"
-                    style={{ color: 'transparent' }}
+                    className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent text-right focus:outline-none focus:border-teal-primary placeholder-transparent"
+                    style={{ color: 'transparent', caretColor: '#ffffff' }}
                   />
                   <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
                     <span className="text-gray-400 text-sm">Minute(s)</span>
@@ -3663,7 +3778,7 @@ const handleStopLossPriceBlur = () => {
                 <input
                   type="checkbox"
                   checked={state.reduceOnly}
-                  onChange={(e) => setState(prev => ({ ...prev, reduceOnly: e.target.checked }))}
+                  onChange={(e) => handleReduceOnlyToggle(e.target.checked)}
                   className="w-4 h-4 text-teal-primary bg-dark-border border-gray-600 rounded focus:ring-teal-primary"
                 />
                 <span className="text-gray-300">Reduce Only</span>
@@ -3820,36 +3935,71 @@ const handleStopLossPriceBlur = () => {
               {/* Take Profit Row */}
               <div className="grid grid-cols-2 gap-2">
                 <div className="relative">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
+              <input
+                type="text"
+                inputMode="decimal"
+                pattern="[0-9.]*"
                     value={state.takeProfitPrice}
                     onChange={(e) => handleTakeProfitPriceChange(e.target.value, e.currentTarget)}
                     onBlur={handleTakeProfitPriceBlur}
+                    onKeyDown={(e) => {
+                      try {
+                        const pxDecimals = (() => {
+                          if (typeof assetPrecision.pxDecimals === 'number') {
+                            return assetPrecision.pxDecimals
+                          }
+                          return getCachedPxDecimals(state.selectedCoin || 'BTC-PERP')
+                        })()
+
+                        if (!Number.isFinite(pxDecimals)) {
+                          return
+                        }
+
+                        if (pxDecimals === 0 && e.key === '.') {
+                          e.preventDefault()
+                          return
+                        }
+
+                        const currentValue = e.currentTarget.value
+                        const cursorPosition = e.currentTarget.selectionStart ?? currentValue.length
+                        const decimalIndex = currentValue.indexOf('.')
+
+                        if (decimalIndex !== -1 && cursorPosition > decimalIndex) {
+                          const decimalPlaces = cursorPosition - decimalIndex - 1
+                          const allowed = typeof pxDecimals === 'number' ? pxDecimals : undefined
+                          const isNavigationKey = e.key === 'Backspace' || e.key === 'Delete' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Tab'
+
+                          if (typeof allowed === 'number' && decimalPlaces >= allowed && !isNavigationKey) {
+                            e.preventDefault()
+                          }
+                        }
+                      } catch (error) {
+                        console.warn('⚠️ Could not enforce TP price decimal precision on keydown:', error)
+                      }
+                    }}
                     placeholder="0"
-                    className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent focus:outline-none focus:border-teal-primary placeholder-transparent"
-                    style={{ color: 'transparent' }}
+                    className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent text-right focus:outline-none focus:border-teal-primary placeholder-transparent"
+                    style={{ color: 'transparent', caretColor: '#ffffff' }}
                   />
                   <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
                     <span className="text-gray-400 text-sm">TP Price</span>
-                    <span className="text-white font-medium">{state.takeProfitPrice || '0'}</span>
+                    <span className="text-white font-medium">{state.takeProfitPrice || ''}</span>
                   </div>
                 </div>
                 <div className="relative">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
+              <input
+                type="text"
+                inputMode="decimal"
+                pattern="[0-9.]*"
                     value={state.takeProfitGain}
                     onChange={(e) => handleTPSLChange('takeProfitGain', e.target.value, e.currentTarget)}
                     placeholder="0"
-                    className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent focus:outline-none focus:border-teal-primary placeholder-transparent"
-                    style={{ color: 'transparent' }}
+                    className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent text-right focus:outline-none focus:border-teal-primary placeholder-transparent"
+                    style={{ color: 'transparent', caretColor: '#ffffff' }}
                   />
                   <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
                     <span className="text-gray-400 text-sm">Gain</span>
-                    <span className="text-white font-medium">{state.takeProfitGain || '0'} %</span>
+                    <span className="text-white font-medium">{state.takeProfitGain || '0'}%</span>
                   </div>
                 </div>
               </div>
@@ -3857,27 +4007,62 @@ const handleStopLossPriceBlur = () => {
               {/* Stop Loss Row */}
               <div className="grid grid-cols-2 gap-2">
                 <div className="relative">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
+              <input
+                type="text"
+                inputMode="decimal"
+                pattern="[0-9.]*"
                     value={state.stopLossPrice}
                     onChange={(e) => handleStopLossPriceChange(e.target.value, e.currentTarget)}
                     onBlur={handleStopLossPriceBlur}
+                    onKeyDown={(e) => {
+                      try {
+                        const pxDecimals = (() => {
+                          if (typeof assetPrecision.pxDecimals === 'number') {
+                            return assetPrecision.pxDecimals
+                          }
+                          return getCachedPxDecimals(state.selectedCoin || 'BTC-PERP')
+                        })()
+
+                        if (!Number.isFinite(pxDecimals)) {
+                          return
+                        }
+
+                        if (pxDecimals === 0 && e.key === '.') {
+                          e.preventDefault()
+                          return
+                        }
+
+                        const currentValue = e.currentTarget.value
+                        const cursorPosition = e.currentTarget.selectionStart ?? currentValue.length
+                        const decimalIndex = currentValue.indexOf('.')
+
+                        if (decimalIndex !== -1 && cursorPosition > decimalIndex) {
+                          const decimalPlaces = cursorPosition - decimalIndex - 1
+                          const allowed = typeof pxDecimals === 'number' ? pxDecimals : undefined
+                          const isNavigationKey = e.key === 'Backspace' || e.key === 'Delete' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Tab'
+
+                          if (typeof allowed === 'number' && decimalPlaces >= allowed && !isNavigationKey) {
+                            e.preventDefault()
+                          }
+                        }
+                      } catch (error) {
+                        console.warn('⚠️ Could not enforce SL price decimal precision on keydown:', error)
+                      }
+                    }}
                     placeholder="0"
                     className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent focus:outline-none focus:border-teal-primary placeholder-transparent"
                     style={{ color: 'transparent' }}
                   />
                   <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
                     <span className="text-gray-400 text-sm">SL Price</span>
-                    <span className="text-white font-medium">{state.stopLossPrice || '0'}</span>
+                    <span className="text-white font-medium">{state.stopLossPrice || ''}</span>
                   </div>
                 </div>
                 <div className="relative">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
+              <input
+                type="text"
+                inputMode="decimal"
+                pattern="[0-9.]*"
                     value={state.stopLossLoss}
                     onChange={(e) => handleTPSLChange('stopLossLoss', e.target.value, e.currentTarget)}
                     placeholder="0"
@@ -3886,7 +4071,7 @@ const handleStopLossPriceBlur = () => {
                   />
                   <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
                     <span className="text-gray-400 text-sm">Loss</span>
-                    <span className="text-white font-medium">{state.stopLossLoss || '0'} %</span>
+                    <span className="text-white font-medium">{state.stopLossLoss || '0'}%</span>
                   </div>
                 </div>
               </div>
@@ -3904,7 +4089,7 @@ const handleStopLossPriceBlur = () => {
           <input
             type="checkbox"
             checked={state.reduceOnly}
-            onChange={(e) => setState(prev => ({ ...prev, reduceOnly: e.target.checked }))}
+            onChange={(e) => handleReduceOnlyToggle(e.target.checked)}
             className="w-4 h-4 text-teal-primary bg-dark-border border-gray-600 rounded focus:ring-teal-primary"
           />
           <span className="text-gray-300">Reduce Only</span>
@@ -3914,7 +4099,7 @@ const handleStopLossPriceBlur = () => {
           <input
             type="checkbox"
             checked={state.takeProfitStopLoss}
-            onChange={(e) => setState(prev => ({ ...prev, takeProfitStopLoss: e.target.checked }))}
+            onChange={(e) => handleTakeProfitStopLossToggle(e.target.checked)}
             className="w-4 h-4 text-teal-primary bg-dark-border border-gray-600 rounded focus:ring-teal-primary"
           />
           <span className="text-gray-300">Take Profit / Stop Loss</span>
@@ -3943,12 +4128,13 @@ const handleStopLossPriceBlur = () => {
       {/* Submit Button */}
       <button
         onClick={handleSubmitOrder}
-        disabled={!isInitialized || isLoading || hasZeroOrInvalidSize() || hasInsufficientCoinSize() || validationErrors.length > 0 || hasInsufficientBalance() ||
+        disabled={!isInitialized || isLoading || hasZeroOrInvalidSize() || hasInsufficientCoinSize() || validationErrors.length > 0 || hasInsufficientBalance() || isReduceOnlyTooLarge() ||
           (state.orderType === 'scale' && (!state.scaleStartPrice || !state.scaleEndPrice || !state.scaleOrderCount || !state.scaleSizeSkew)) ||
           (state.orderType === 'twap' && (!state.twapRunningTimeHours || !state.twapRunningTimeMinutes || !state.twapNumberOfIntervals))}
         className="w-full py-3 bg-teal-primary hover:bg-teal-hover disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded mb-6 transition-colors"
       >
         {isLoading ? 'Processing...' : 
+         isReduceOnlyTooLarge() ? 'Reduce Only Too Large' :
          hasInsufficientBalance() ? 'Not Enough Margin' :
          state.orderType === 'scale' ? 'Place Scale Orders' :
          state.orderType === 'twap' ? 'Place TWAP Order' :
@@ -4183,10 +4369,9 @@ const handleStopLossPriceBlur = () => {
                     const derivedTransferRequirement =
                       typeof rawTransferRequirement === 'number' && Number.isFinite(rawTransferRequirement)
                         ? rawTransferRequirement
-                        : Math.max(
-                            accountInfo.marginRequired || 0,
-                            (accountInfo.totalNotional || 0) * 0.1
-                          )
+                        : (typeof accountInfo.marginRequired === 'number' && Number.isFinite(accountInfo.marginRequired)
+                            ? accountInfo.marginRequired
+                            : 0)
 
                     const accountValue =
                       typeof accountInfo.accountValue === 'number' && Number.isFinite(accountInfo.accountValue)

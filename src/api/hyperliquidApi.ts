@@ -121,7 +121,12 @@ class HyperliquidAPI {
     })
     
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
+      try {
+        const errorData = await response.json()
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`)
+      } catch (parseError) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
     }
     
     return response.json()
@@ -148,7 +153,12 @@ class HyperliquidAPI {
     const response = await fetch(`${this.baseUrl}/leverage-status/${address}`)
     
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
+      try {
+        const errorData = await response.json()
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`)
+      } catch (parseError) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
     }
     
     return response.json()
@@ -162,12 +172,16 @@ class HyperliquidAPI {
       },
       body: JSON.stringify(params)
     })
-
+    
     if (!response.ok) {
-      const errorData = await response.json()
-      throw new Error(errorData.error || `HTTP error! status: ${response.status}`)
+      try {
+        const errorData = await response.json()
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`)
+      } catch (parseError) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
     }
-
+    
     return response.json()
   }
 
