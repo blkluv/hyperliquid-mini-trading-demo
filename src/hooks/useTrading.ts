@@ -152,7 +152,7 @@ export const useTrading = () => {
   const [state, setState] = useState<TradingState>({
     selectedCoin: CONFIG.DEFAULT_COIN,
     marginMode: CONFIG.DEFAULT_MARGIN_MODE,
-    leverage: CONFIG.DEFAULT_LEVERAGE,
+    leverage: 1, // Start with 1x, will be properly set after initialization
     orderType: 'market',
     side: 'buy',
     size: '',
@@ -194,6 +194,9 @@ export const useTrading = () => {
       
       // Load initial account data
       await loadAccountData()
+      
+      // Initialize leverage for default coin after SDK is ready
+      await initializeLeverageForCoin(CONFIG.DEFAULT_COIN)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to initialize SDK')
       setIsInitialized(false)
@@ -1059,6 +1062,95 @@ export const useTrading = () => {
     }
   }, [getPositionForCoin])
 
+  // Initialize leverage for a specific coin
+  const initializeLeverageForCoin = useCallback(async (coin: string) => {
+    if (!hyperliquidService.isReady()) return
+    
+    try {
+      // Check if there's a position for this coin
+      const clearinghouseState = await hyperliquidService.getClearinghouseState()
+      const coinToMatch = coin.replace('-PERP', '')
+      
+      if (clearinghouseState?.assetPositions) {
+        const coinPosition = clearinghouseState.assetPositions.find(
+          (pos: any) => pos.position?.coin === coinToMatch
+        )
+        
+        if (coinPosition?.position) {
+          // Has position - use position's leverage
+          const position = coinPosition.position
+          const positionLeverage = position.leverage && typeof position.leverage === 'object' 
+            ? parseFloat(position.leverage.value) 
+            : null
+          
+          if (positionLeverage && !isNaN(positionLeverage)) {
+            setState(prev => ({ ...prev, leverage: positionLeverage }))
+            console.log(`📊 Using position leverage: ${positionLeverage}x for ${coin}`)
+            return
+          }
+        }
+      }
+      
+      // No position - check localStorage first, then use max leverage
+      const storedLeverage = loadStoredLeveragePreference(coin, state.marginMode)
+      
+      try {
+        const leverageData = await hyperliquidService.getLeverageInfo ? 
+          await hyperliquidService.getLeverageInfo(coinToMatch) : 
+          { maxLeverage: CONFIG.DEFAULT_LEVERAGE }
+        
+        const maxLeverage = leverageData.maxLeverage || CONFIG.DEFAULT_LEVERAGE
+        
+        if (storedLeverage !== null) {
+          // Use stored leverage, but ensure it doesn't exceed max
+          const leverageToApply = Math.min(Math.max(storedLeverage, 1), maxLeverage)
+          setState(prev => ({ ...prev, leverage: leverageToApply }))
+          console.log(`📊 Using stored leverage: ${leverageToApply}x for ${coin} (stored: ${storedLeverage}x, max: ${maxLeverage}x)`)
+        } else {
+          // No stored leverage - use max leverage
+          setState(prev => ({ ...prev, leverage: maxLeverage }))
+          storeLeveragePreference(coin, state.marginMode, maxLeverage)
+          console.log(`📊 Using max leverage: ${maxLeverage}x for ${coin} (no stored preference)`)
+        }
+      } catch (leverageError) {
+        console.error('Failed to get leverage info, using stored or default:', leverageError)
+        const fallbackLeverage = storedLeverage || CONFIG.DEFAULT_LEVERAGE
+        setState(prev => ({ ...prev, leverage: fallbackLeverage }))
+      }
+    } catch (error) {
+      console.error('Failed to initialize leverage for coin:', error)
+    }
+  }, [state.marginMode])
+
+  // Helper function to load stored leverage preference
+  const loadStoredLeveragePreference = useCallback((coin: string, marginMode: 'isolated' | 'cross'): number | null => {
+    if (typeof window === 'undefined') return null
+    
+    try {
+      const key = `hyperliquid.leverage.${coin.toUpperCase()}.${marginMode}`
+      const raw = window.localStorage.getItem(key)
+      if (!raw) return null
+      
+      const parsed = parseFloat(raw)
+      return isNaN(parsed) ? null : parsed
+    } catch (error) {
+      console.warn('⚠️ Failed to load stored leverage preference:', error)
+      return null
+    }
+  }, [])
+
+  // Helper function to store leverage preference
+  const storeLeveragePreference = useCallback((coin: string, marginMode: 'isolated' | 'cross', leverage: number) => {
+    if (typeof window === 'undefined' || !Number.isFinite(leverage) || leverage <= 0) return
+    
+    try {
+      const key = `hyperliquid.leverage.${coin.toUpperCase()}.${marginMode}`
+      window.localStorage.setItem(key, leverage.toString())
+    } catch (error) {
+      console.warn('⚠️ Failed to store leverage preference:', error)
+    }
+  }, [])
+
   // Initialize on mount
   useEffect(() => {
     initializeSDK()
@@ -1081,6 +1173,9 @@ export const useTrading = () => {
     getPositionForCoin,
     updatePositionForCoin,
     formatPriceForTickSize,
+    initializeLeverageForCoin,
+    loadStoredLeveragePreference,
+    storeLeveragePreference,
     // TWAP monitoring
     activeTwapTasks,
     twapTaskDetails,

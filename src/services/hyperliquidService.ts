@@ -286,6 +286,31 @@ class HyperliquidService {
     }
   }
 
+  async getLeverageInfo(coin: string) {
+    try {
+      const response = await fetch(`http://localhost:3001/api/leverage/${coin}`)
+      if (!response.ok) {
+        throw new Error(`Failed to fetch leverage info: ${response.statusText}`)
+      }
+      return await response.json()
+    } catch (error) {
+      console.error('Error fetching leverage info:', error)
+      // Return fallback data
+      return {
+        coin,
+        maxLeverage: 20,
+        marginTableId: 0,
+        szDecimals: 5,
+        pxDecimals: null,
+        marginTable: {
+          description: 'Fallback',
+          marginTiers: [{ lowerBound: '0.0', maxLeverage: 20 }]
+        },
+        timestamp: new Date().toISOString()
+      }
+    }
+  }
+
   isReady(): boolean {
     return this.isInitialized
   }

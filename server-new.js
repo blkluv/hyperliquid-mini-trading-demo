@@ -209,37 +209,30 @@ const fetchPrices = async () => {
   
   isFetchingPrices = true
   try {
-    // Get both mids (prices) and meta (asset names)
-    const [mids, meta] = await Promise.all([
-      infoClient.allMids(),
-      infoClient.meta()
-    ])
-    
+    // Prefer mark prices over mids for downstream consumers
+    const [meta, assetCtxs] = await infoClient.metaAndAssetCtxs()
+
     const prices = {}
-    
-    if (mids && meta && meta.universe) {
-      // Create a mapping from asset ID to asset name
-      const assetIdToName = {}
+    if (meta && Array.isArray(meta.universe) && Array.isArray(assetCtxs)) {
       meta.universe.forEach((asset, index) => {
-        if (asset.name) {
-          // Use the index as the asset ID (from API)
-          assetIdToName[index] = asset.name
+        const name = asset?.name
+        if (!name) return
+        const ctx = assetCtxs[index]
+        const mark = ctx?.markPx != null ? parseFloat(ctx.markPx) : null
+        const mid = ctx?.midPx != null ? parseFloat(ctx.midPx) : null
+        const oracle = ctx?.oraclePx != null ? parseFloat(ctx.oraclePx) : null
+        const px = (mark ?? mid ?? oracle)
+        if (px == null) return
+        const key = name.includes('-PERP') ? name : `${name}-PERP`
+        prices[key] = {
+          price: px,
+          markPx: mark,
+          midPx: mid,
+          oraclePx: oracle,
+          timestamp: Date.now(),
         }
       })
-      
-      // Map prices using asset names with -PERP suffix
-      Object.keys(mids).forEach(assetId => {
-        const assetName = assetIdToName[parseInt(assetId)] || assetId
-        if (assetName) {
-          // Add -PERP suffix for frontend compatibility
-          const assetKey = assetName.includes('-PERP') ? assetName : `${assetName}-PERP`
-          prices[assetKey] = {
-            price: mids[assetId],
-            timestamp: Date.now()
-          }
-        }
-      })
-      
+
       latestPrices = prices
       broadcastPrices(prices)
     }

@@ -198,6 +198,9 @@ const TradingInterface: React.FC = () => {
     getPositionForCoin,
     updatePositionForCoin,
     formatPriceForTickSize,
+    initializeLeverageForCoin,
+    loadStoredLeveragePreference,
+    storeLeveragePreference,
     // TWAP monitoring
     activeTwapTasks,
     twapTaskDetails,
@@ -776,6 +779,28 @@ const TradingInterface: React.FC = () => {
           : parseFloat(String(priceData))
       })()
     : currentPrice
+
+  // Prefer oracle price for liquidation calculations when available
+  const getOraclePriceForSelected = React.useCallback((): number | null => {
+    if (!selectedCoinKey || !priceMap || priceMap[selectedCoinKey] === undefined) return null
+    const data = priceMap[selectedCoinKey]
+    if (typeof data === 'object' && data !== null && 'oraclePx' in data && data.oraclePx != null) {
+      const v = parseFloat((data as any).oraclePx.toString())
+      return Number.isFinite(v) && v > 0 ? v : null
+    }
+    return null
+  }, [priceMap, selectedCoinKey])
+
+  // Prefer mid price for liquidation calculations when available
+  const getMidPriceForSelected = React.useCallback((): number | null => {
+    if (!selectedCoinKey || !priceMap || priceMap[selectedCoinKey] === undefined) return null
+    const data = priceMap[selectedCoinKey]
+    if (typeof data === 'object' && data !== null && 'midPx' in data && (data as any).midPx != null) {
+      const v = parseFloat((data as any).midPx.toString())
+      return Number.isFinite(v) && v > 0 ? v : null
+    }
+    return null
+  }, [priceMap, selectedCoinKey])
 
   const prevOrderTypeRef = useRef(state.orderType)
   const prevSelectedCoinRef = useRef(state.selectedCoin)
@@ -1835,46 +1860,6 @@ const handleLimitPriceChange = (value: string, inputEl?: HTMLInputElement) => {
   setState(prev => ({ ...prev, limitPrice: normalizedEnforced, limitPriceManuallySet: true }))
 }
 
-const getLeverageStorageKey = (coin: string, marginMode: 'isolated' | 'cross') => {
-  const normalizedCoin = (coin || 'UNKNOWN').toUpperCase()
-  return `hyperliquid.leverage.${normalizedCoin}.${marginMode}`
-}
-
-const loadStoredLeveragePreference = (coin: string, marginMode: 'isolated' | 'cross'): number | null => {
-  if (typeof window === 'undefined') {
-    return null
-  }
-
-  try {
-    const key = getLeverageStorageKey(coin, marginMode)
-    const raw = window.localStorage.getItem(key)
-    if (!raw) {
-      return null
-    }
-    const parsed = parseFloat(raw)
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null
-  } catch (error) {
-    console.warn('⚠️ Failed to load stored leverage preference:', error)
-    return null
-  }
-}
-
-const storeLeveragePreference = (coin: string, marginMode: 'isolated' | 'cross', leverage: number) => {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  if (!Number.isFinite(leverage) || leverage <= 0) {
-    return
-  }
-
-  try {
-    const key = getLeverageStorageKey(coin, marginMode)
-    window.localStorage.setItem(key, leverage.toString())
-  } catch (error) {
-    console.warn('⚠️ Failed to store leverage preference:', error)
-  }
-}
 
 const handleScaleStartPriceChange = (value: string, inputEl?: HTMLInputElement) => {
   const normalizedEnforced = sanitizePriceInput(value, state.scaleStartPrice || '', state.selectedCoin, inputEl)
@@ -2310,11 +2295,6 @@ const handleScaleEndPriceBlur = () => {
       limitPriceManuallySet: false
     }))
 
-    const storedLeverage = loadStoredLeveragePreference(coin, state.marginMode)
-    if (storedLeverage !== null) {
-      setState(prev => ({ ...prev, leverage: storedLeverage }))
-    }
-    
     // Update position for the selected coin immediately
     try {
       await updatePositionForCoin(coin)
@@ -2322,97 +2302,15 @@ const handleScaleEndPriceBlur = () => {
       try {
         const metadata = await HyperliquidPrecision.getAssetMetadata(coin)
         if (metadata) {
+          // Metadata loaded successfully
         }
       } catch (precisionError) {
         console.warn(`⚠️ Failed to refresh precision metadata for ${coin}:`, precisionError)
       }
       
-      // Get clearinghouse state to extract margin mode and leverage for this coin
-      try {
-        const clearinghouseState = await hyperliquidService.getClearinghouseState()
-        
-        if (clearinghouseState?.assetPositions) {
-          const coinToMatch = coin.replace('-PERP', '')
-          const coinPosition = clearinghouseState.assetPositions.find(
-            (pos: any) => pos.position?.coin === coinToMatch
-          )
-          
-          if (coinPosition?.position) {
-            // Has position for this coin - use the leverage from position
-            const position = coinPosition.position
-            
-            // Extract margin mode and leverage from position
-            const positionMarginMode = position.leverage && typeof position.leverage === 'object' ? position.leverage.type : null
-            const positionLeverage = position.leverage && typeof position.leverage === 'object' ? position.leverage.value : null
-            
-            if (positionMarginMode) {
-              setState(prev => ({ ...prev, marginMode: positionMarginMode }))
-              toast.success(`Margin mode updated to ${positionMarginMode} for ${coin}`, {
-                duration: 3000,
-                style: {
-                  background: '#065f46',
-                  color: '#ffffff',
-                  border: '1px solid #10b981',
-                },
-              })
-            }
-            
-            if (positionLeverage && !isNaN(parseFloat(positionLeverage))) {
-              const leverage = parseFloat(positionLeverage)
-              setState(prev => ({ ...prev, leverage }))
-              storeLeveragePreference(coin, state.marginMode, leverage)
-              toast.success(`Leverage updated to ${leverage}x for ${coin}`, {
-                duration: 3000,
-                style: {
-                  background: '#065f46',
-                  color: '#ffffff',
-                  border: '1px solid #10b981',
-                },
-              })
-            }
-          } else {
-            // No position for this coin - set leverage to maximum available
-            try {
-              const coinName = coin.replace('-PERP', '')
-              const leverageData = await leverageService.getLeverageInfo(coinName)
-              const maxLeverage = leverageData.maxLeverage
-
-              const stored = loadStoredLeveragePreference(coin, state.marginMode)
-              const leverageToApply = stored !== null
-                ? Math.min(Math.max(stored, 1), maxLeverage)
-                : maxLeverage
-
-              setState(prev => ({ ...prev, leverage: leverageToApply }))
-              storeLeveragePreference(coin, state.marginMode, leverageToApply)
-              console.log(`📊 No position for ${coin}, applying leverage: ${leverageToApply}x (max ${maxLeverage}x)`) 
-            } catch (leverageError) {
-              console.error('Failed to get max leverage for coin:', leverageError)
-              // Keep current leverage as fallback
-            }
-          }
-        } else {
-          // No clearinghouse state available - set leverage to maximum available
-          try {
-            const coinName = coin.replace('-PERP', '')
-            const leverageData = await leverageService.getLeverageInfo(coinName)
-            const maxLeverage = leverageData.maxLeverage
-
-            const stored = loadStoredLeveragePreference(coin, state.marginMode)
-            const leverageToApply = stored !== null
-              ? Math.min(Math.max(stored, 1), maxLeverage)
-              : maxLeverage
-
-            setState(prev => ({ ...prev, leverage: leverageToApply }))
-            storeLeveragePreference(coin, state.marginMode, leverageToApply)
-            console.log(`📊 No clearinghouse state, applying leverage: ${leverageToApply}x (max ${maxLeverage}x)`) 
-          } catch (leverageError) {
-            console.error('Failed to get max leverage for coin:', leverageError)
-            // Keep current leverage as fallback
-          }
-        }
-      } catch (clearinghouseError) {
-        console.error('Failed to get clearinghouse state for coin:', clearinghouseError)
-      }
+      // Initialize leverage using the new centralized logic
+      await initializeLeverageForCoin(coin)
+      
     } catch (error) {
       console.error('Failed to update position for selected coin:', error)
     }
@@ -2528,9 +2426,19 @@ const handleScaleEndPriceBlur = () => {
           }
         }
         
-        // If no valid limit price, use market price
-        if (!entryPrice && typeof topCardPrice === 'number' && topCardPrice > 0) {
-          entryPrice = topCardPrice
+        // If no valid limit price, prefer mid price, then oracle, then fallback to market price
+        if (!entryPrice) {
+          const mid = getMidPriceForSelected()
+          if (mid && mid > 0) {
+            entryPrice = mid
+          } else {
+            const oracle = getOraclePriceForSelected()
+            if (oracle && oracle > 0) {
+              entryPrice = oracle
+            } else if (typeof topCardPrice === 'number' && topCardPrice > 0) {
+              entryPrice = topCardPrice
+            }
+          }
         }
         
         // If we have a valid entry price, calculate liquidation price
@@ -4473,11 +4381,19 @@ const handleScaleEndPriceBlur = () => {
           <span className="text-gray-400">Liquidation Price:</span>
           <span className="text-white">
             {(() => {
-              if (state.size && typeof topCardPrice === 'number') {
+              if (state.size && (typeof topCardPrice === 'number' || getMidPriceForSelected() || getOraclePriceForSelected())) {
                 // Calculate liquidation price based on order parameters
-                const entryPrice = state.orderType === 'limit' && state.limitPrice 
-                  ? parseFloat(state.limitPrice) 
-                  : topCardPrice // Use current price for market orders
+                const entryPrice = (() => {
+                  if (state.orderType === 'limit' && state.limitPrice) {
+                    const v = parseFloat(state.limitPrice)
+                    if (Number.isFinite(v) && v > 0) return v
+                  }
+                  const mid = getMidPriceForSelected()
+                  if (mid && mid > 0) return mid
+                  const oracle = getOraclePriceForSelected()
+                  if (oracle && oracle > 0) return oracle
+                  return typeof topCardPrice === 'number' ? topCardPrice : 0
+                })()
                 const leverage = state.leverage
                 const positionSize = Math.abs(getCoinSizeForApi())
 
@@ -4537,62 +4453,7 @@ const handleScaleEndPriceBlur = () => {
             })()}
           </span>
         </div>
-        {(() => {
-          try {
-            if (!state.size || typeof topCardPrice !== 'number') return null
-            const entryPrice = state.orderType === 'limit' && state.limitPrice 
-              ? parseFloat(state.limitPrice) 
-              : topCardPrice
-            if (!(entryPrice > 0) || !(state.leverage > 0)) return null
-            const positionSize = Math.abs(getCoinSizeForApi())
-            if (!(positionSize > 0)) return null
-
-            const rawTransferRequirement = accountInfo.transferRequirement
-            const derivedTransferRequirement =
-              typeof rawTransferRequirement === 'number' && Number.isFinite(rawTransferRequirement)
-                ? rawTransferRequirement
-                : (typeof accountInfo.marginRequired === 'number' && Number.isFinite(accountInfo.marginRequired)
-                    ? accountInfo.marginRequired
-                    : 0)
-
-            const totalEquityFallback = accountInfo.availableToTrade + (Number.isFinite(derivedTransferRequirement) ? derivedTransferRequirement : accountInfo.marginRequired || 0)
-            const accountValue =
-              typeof accountInfo.accountValue === 'number' && Number.isFinite(accountInfo.accountValue) && accountInfo.accountValue > 0
-                ? accountInfo.accountValue
-                : totalEquityFallback
-
-            const marginTiers = leverageInfo?.marginTable?.marginTiers?.map(tier => ({
-              lowerBound: parseFloat(tier.lowerBound),
-              maxLeverage: tier.maxLeverage
-            })).filter(tier => Number.isFinite(tier.lowerBound) && tier.maxLeverage > 0)
-
-            const details = calculateLiquidationWithDetailsFromInputs({
-              entryPrice,
-              leverage: state.leverage,
-              side: state.side,
-              coin: state.selectedCoin,
-              marginMode: state.marginMode,
-              walletBalance: accountInfo.availableToTrade,
-              positionSize,
-              accountValue,
-              isolatedMargin: state.marginMode === 'isolated' ? calculateIsolatedMarginRequirement(positionSize, entryPrice, state.leverage) : 0,
-              transferRequirement: derivedTransferRequirement,
-              marginTiers,
-              maxLeverage: leverageInfo?.maxLeverage
-            })
-
-            const maintLeverage = details.rate > 0 ? (1 / (2 * details.rate)) : 0
-            const fmtUSD = (n: number, d = 2) => n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })
-
-            return (
-              <div className="mt-1 text-xs text-gray-400">
-                Equity used: ${fmtUSD(details.equityUsed)} · Maint tier: {maintLeverage.toFixed(0)}x (l={details.rate.toFixed(3)}) · Deduction: ${fmtUSD(details.deduction, 0)}
-              </div>
-            )
-          } catch {
-            return null
-          }
-        })()}
+        {/* Calculation details removed */}
         <div className="flex justify-between">
           <span className="text-gray-400">Order Value:</span>
           <span className="text-white">

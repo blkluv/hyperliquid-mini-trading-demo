@@ -265,7 +265,23 @@ export const calculateLiquidationPriceFromInputs = ({
   }
 
   const notionalAtEntry = effectivePositionSize * entryPrice
-  const initialMarginRequired = notionalAtEntry / leverage
+  // Use the lesser of user-selected leverage and the tier-allowed max leverage at entry notional
+  // This aligns IM fallback with Hyperliquid's opening constraints for the given notional.
+  let allowedLevAtEntry = leverage
+  if (normalizedMarginTiers.length > 0) {
+    const sorted = [...normalizedMarginTiers].sort((a, b) => a.lowerBound - b.lowerBound)
+    for (const tier of sorted) {
+      if (notionalAtEntry >= tier.lowerBound) {
+        allowedLevAtEntry = tier.maxLeverage
+      } else {
+        break
+      }
+    }
+  } else if (typeof maxLeverage === 'number' && maxLeverage > 0) {
+    allowedLevAtEntry = maxLeverage
+  }
+  const leverageForIM = Math.max(1, Math.min(leverage, allowedLevAtEntry))
+  const initialMarginRequired = notionalAtEntry / leverageForIM
 
   const transferRequirementValue = isFiniteNumber(transferRequirement) ? transferRequirement : undefined
 
@@ -436,7 +452,22 @@ export const calculateLiquidationWithDetailsFromInputs = ({
   }
 
   const notionalAtEntry = effectivePositionSize * entryPrice
-  const initialMarginRequired = notionalAtEntry / leverage
+  // Align IM with tier-allowed leverage at entry notional
+  let allowedLevAtEntry = leverage
+  if (normalizedMarginTiers.length > 0) {
+    const sorted = [...normalizedMarginTiers].sort((a, b) => a.lowerBound - b.lowerBound)
+    for (const tier of sorted) {
+      if (notionalAtEntry >= tier.lowerBound) {
+        allowedLevAtEntry = tier.maxLeverage
+      } else {
+        break
+      }
+    }
+  } else if (typeof maxLeverage === 'number' && maxLeverage > 0) {
+    allowedLevAtEntry = maxLeverage
+  }
+  const leverageForIM = Math.max(1, Math.min(leverage, allowedLevAtEntry))
+  const initialMarginRequired = notionalAtEntry / leverageForIM
 
   const transferRequirementValue = isFiniteNumber(transferRequirement) ? transferRequirement : undefined
 

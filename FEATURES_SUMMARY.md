@@ -131,25 +131,43 @@
 
 ### 8. 💰 更新清算价格计算
 
-**功能描述**: 实现了完整的清算价格计算功能，支持多种保证金模式 (refer to [computing-liquidation-price](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/liquidations#computing-liquidation-price))
+**功能描述**: 全面对齐 Hyperliquid 的强平价计算逻辑：分级维持保证金、分级扣减、全仓/逐仓权益来源、迭代选层、以及入场参考价的优先级。
 
-**主要功能**:
-- 支持交叉保证金和逐仓保证金模式
-- 考虑杠杆和保证金要求
-- 支持多币种清算价格计算
-- 实时清算价格显示
-(目前清算价格跟交易所UI还对不上，问题在于：在整个处理流程里，尽管我们现在已经能拿到每个币种对应的 marginTableId，并且通过 /api/meta 接口也能获取到分层的边界数据（比如 lowerBound） 但是目前还没有拿到每个层级对应的维持保证金比例（maintenance leverage/fraction），我们只能hardcode进去的一些常量（比如 BTC: 0.004），其实只是刚好对应最小的那个层级。所以，position notional crosses a higher tier，我们界面上显示的价格就会开始偏差，Next step is to enhance the server’s leverage endpoint so it also returns the maintenance leverage per tier (the info client can provide it, we just haven’t exposed it))
+**主要更新**:
+- 分级维持保证金与扣减（tiering）
+  - 按 metaAndAssetCtxs 返回的 `marginTables` 解析每一层的最大维持杠杆 M，计算维持率 `l = 1 / (2*M)`
+  - 叠加分级扣减 D，保证跨层连续：在每个阈值 `lowerBound` 处累加 `ΔD = lowerBound × (l_next − l_prev)`
+  - 以名义 `|q|×P` 为自变量迭代选层（先选层→算 P，再检查是否换层→直到收敛）
+- 权益来源（E）与 IM 回退对齐官方
+  - 交叉（Cross）：优先用账户权益 `accountValue`；若不足以预估，回退到“初始保证金 IM”
+  - 逐仓（Isolated）：用逐仓保证金；若未给出，以 `IM = |q|×P0 / leverage` 计算
+  - IM 回退修正：使用“入场名义所在分级的允许最大杠杆”约束 `leverageForIM = min(用户选择杠杆, 分级允许杠杆)`，使 IM 与官方开仓约束一致（例如 ETH 名义≥50K 时，IM 按 5x 而非 10x 计算）
+- 入场参考价优先级（用于强平计算）
+  - 优先使用 `midPx` → 其次 `oraclePx` → 最后使用流中的 `markPx`（服务端已发布三者）
+- 价格源与推流
+  - 服务器从 `metaAndAssetCtxs` 提供 `markPx / midPx / oraclePx`，并以 `markPx` 为主价发布到 `/api/prices` 和 SSE `/api/price-stream`
+- UI 行为
+  - 强平价仅显示结果，去除“Equity used / Maint tier / Deduction”明细行（应请求）
+  - 杠杆滑块的“用户偏好”与“持仓杠杆”解耦：若有持仓，UI 显示持仓实际杠杆，但不覆盖本地偏好（刷新不再回退）
+- 调试/核对能力
+  - 支持 `window.__LIQ_EQUITY_OVERRIDE = <number>`（仅 Cross）用于对齐官方 UI 的演示值
 
-**测试示例**:
-```javascript
-// BTC清算价格计算 (逐仓模式)
-"入场价: $50,000, 杠杆: 10x, 方向: 多头" 
-→ "清算价: $45,000" ✅
+**公式与实现要点**:
+- 多头强平（含扣减）：`P = (q·P0 − (E + D)) / (q·(1 − l))`
+- 空头强平：`P = (q·P0 + (E + D)) / (q·(1 + l))`
+- 逐层扣减：`D = Σ(lowerBound_i × (l_i − l_{i−1}))`
+- 迭代：以 `|q|·P` 判断层级，更新 `l、D`，直到价格与层级一致
 
-// ETH清算价格计算 (交叉保证金模式)
-"入场价: $3,000, 杠杆: 5x, 方向: 空头"
-→ "清算价: $3,600" ✅
-```
+**对齐示例**:
+- ETH-PERP，22 ETH 多，Cross，10x，入场 4199.0：
+  - 分级：名义≥50K → `l=0.10`，`D=3100`
+  - IM 回退使用层级允许杠杆 5x：`IM ≈ 18,475.6` → 强平价 ≈ `3,575.9`（与官方一致）
+- BTC-PERP，10 BTC 多，Cross，10x，入场 113,258：
+  - 分级：名义≥50K → `l=0.05`，`D=1575`
+  - IM 回退按 10x：`IM=11,325.8` → 强平价 ≈ `107,132`；若官方 UI 用不同入场参考（mid/oracle），会产生 ±0.1% 的微小差异
+
+**注意**:
+- 强平价是“参考值”，实际撮合与标记、预防机制等可能导致官方 UI 与本地预估存在数十美金以内的漂移；已通过“优先 midPx/次要 oraclePx/最终 markPx”的顺序尽量对齐。
 
 ### 9. 💵 Available to Trade 余额显示
 
@@ -340,6 +358,14 @@ Price decimals and tick alignment
 - 测试脚本和API测试工具
 
 
+### 18. 📡 Price Feed Update (Server)
+
+- server-new.js: fetchPrices now uses `infoClient.metaAndAssetCtxs()` instead of `allMids()`.
+- For each asset, we set `price = markPx ?? midPx ?? oraclePx` and also include all three in the payload.
+- Previously, the stream used only mid prices from `allMids`; this change aligns displayed prices closer to the official app (which uses mark), reducing downstream discrepancies in UI displays and calculations.
+
+
+
 ## 🚀 下一步计划
 
 1. 添加更多币种支持
@@ -350,4 +376,3 @@ Price decimals and tick alignment
 5. 增加更多风险控制功能
 6. Rich api response via using official python SDK
 7. ADD USD as unit impl for Take Profit / Stop Loss
-
