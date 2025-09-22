@@ -148,23 +148,23 @@ describe('HyperliquidPrecision', () => {
   describe('edge cases', () => {
     it('should handle zero values', () => {
       const assetInfo = { szDecimals: 2, pxDecimals: 2, isPerp: true }
-      // 零值价格现在返回 '0' 而不是抛出错误
+      // Zero price now returns '0' instead of throwing
       expect(HyperliquidPrecision.formatPrice(0, assetInfo)).toBe('0')
-      // 大小可以为零
+      // Size can be zero
       const result = HyperliquidPrecision.formatSize(0, 2)
       expect(result).toBe('0.00')
     })
 
     it('should handle NaN values', () => {
       const assetInfo = { szDecimals: 2, pxDecimals: 2, isPerp: true }
-      // NaN 价格现在返回 '0' 而不是抛出错误
+      // NaN price now returns '0' instead of throwing
       expect(HyperliquidPrecision.formatPrice(NaN, assetInfo)).toBe('0')
       expect(() => HyperliquidPrecision.formatSize(NaN, 2)).toThrow('Invalid size value')
     })
 
     it('should handle infinity values', () => {
       const assetInfo = { szDecimals: 2, pxDecimals: 2, isPerp: true }
-      // 无穷大价格现在返回 '0' 而不是抛出错误
+      // Infinity price now returns '0' instead of throwing
       expect(HyperliquidPrecision.formatPrice(Infinity, assetInfo)).toBe('0')
       expect(() => HyperliquidPrecision.formatSize(Infinity, 2)).toThrow('Invalid size value')
     })

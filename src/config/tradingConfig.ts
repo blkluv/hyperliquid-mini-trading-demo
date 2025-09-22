@@ -1,4 +1,5 @@
 import { COIN_PRECISION_CONFIG, getCoinPrecision } from './hyperliquidPrecisionConfig'
+import { HyperliquidPrecision } from '../utils/hyperliquidPrecision'
 
 // Trading configuration for managing hardcoded values
 // This file centralizes all trading-related constants and configurations
@@ -57,8 +58,8 @@ export class TradingConfigHelper {
    */
   static getMinOrderSize(coin: string): number {
     const szDecimals = this.getSzDecimals(coin)
-    // 最小订单大小 = 1 / 10^szDecimals
-    // 例如：szDecimals=5 -> 0.00001, szDecimals=2 -> 0.01, szDecimals=0 -> 1
+    // Minimum order size = 1 / 10^szDecimals
+    // Examples: szDecimals=5 -> 0.00001, szDecimals=2 -> 0.01, szDecimals=0 -> 1
     return Math.pow(10, -szDecimals)
   }
 
@@ -80,12 +81,13 @@ export class TradingConfigHelper {
    */
   static getPxDecimals(coin: string): number {
     const precision = getCoinPrecision(coin)
+    const computed = HyperliquidPrecision.getMaxPriceDecimals(precision.szDecimals, !!precision.isPerp)
     console.log(`📊 TradingConfigHelper.getPxDecimals for ${coin}:`, {
       coin,
-      result: precision.pxDecimals,
-      source: 'hyperliquidPrecisionConfig'
+      result: computed,
+      source: 'rule-based'
     })
-    return precision.pxDecimals
+    return computed
   }
 
   /**

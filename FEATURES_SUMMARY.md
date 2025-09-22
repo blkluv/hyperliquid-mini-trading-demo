@@ -261,6 +261,47 @@
 "可用余额: $50, 所需保证金: $100" → "保证金不足" ⚠️
 ```
 
+### 15. 🧮 Liquidation Math & Price Precision (Summary)
+
+Liquidation price (our implementation)
+- Long: p = (q·p0 − (E + d)) / (q·(1 − l))
+- Short: p = (q·p0 + (E + d)) / (q·(1 + l))
+- Terms:
+  - q: absolute position size (in coin)
+  - p0: entry price used by the ticket (limit if set, else current)
+  - l: maintenance margin fraction from the active tier
+  - d: tier deduction to keep piecewise maintenance continuous
+  - E: equity used
+- Equity used (E):
+  - Cross: E = max(accountValue, IM)
+    - IM (initial margin) = q·p0 / leverage
+    - Optional dev override: window.__LIQ_EQUITY_OVERRIDE or localStorage 'LIQ_EQUITY_OVERRIDE' (still floored to IM)
+  - Isolated: E = isolatedMargin (if not provided, we compute IM)
+- Tier selection (l, d):
+  - We build a maintenance schedule from margin tiers. For a tier with maxLeverage Lmax, l = 1 / (2·Lmax)
+  - Deduction is cumulative to ensure continuity across tiers: d_i = d_{i−1} + lowerBound_i · (l_i − l_{i−1}), with d_0 = 0
+  - Because l and d depend on notional at the liquidation price (|p|·q), we iteratively solve (up to 8 iterations) until the tier and price stabilize
+- Data sources we use:
+  - accountValue, totalMarginUsed from /api/wallet-balance (server proxies SDK marginSummary)
+  - availableToTrade = accountValue − totalMarginUsed (used as walletBalance in inputs)
+  - Margin tiers from /api/leverage/:coin, with a conservative fallback if unavailable
+- What the UI shows:
+  - Alongside the liquidation price, we display: "Equity used: $… · Maint tier: …x (l=…) · Deduction: $…"
+
+Price decimals and tick alignment
+- MAX_DECIMALS: perp=6, spot=8
+- pxDecimals = MAX_DECIMALS − szDecimals (per asset). szDecimals comes from precision config/API
+- Validation rules (client utils):
+  - At most 5 significant digits for prices (integer prices are exempt)
+  - Decimal places must not exceed pxDecimals
+- Formatting/alignment:
+  - We format to the tick grid implied by pxDecimals and round up (ceil) to meet exchange rules
+  - ETH display UX: keep at least one decimal (e.g., "1234.0")
+  - If tick-size derivation is not available, we fall back to the rule-based pxDecimals above
+- Examples:
+  - ETH-PERP (szDecimals=4 ⇒ pxDecimals=2): 4183.711 → 4183.72
+  - BTC-PERP (szDecimals=5 ⇒ pxDecimals=1): 30000.04 → 30000.1
+
 ### 16. 🧪 Take Profit / Stop Loss 优化
 
 🔧 核心功能
@@ -309,5 +350,4 @@
 5. 增加更多风险控制功能
 6. Rich api response via using official python SDK
 7. ADD USD as unit impl for Take Profit / Stop Loss
-
 

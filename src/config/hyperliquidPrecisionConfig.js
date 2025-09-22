@@ -1,22 +1,22 @@
 /**
- * Hyperliquid精度配置 - JavaScript版本
- * 为Node.js服务器提供精度配置
+ * Hyperliquid precision configuration - JavaScript version
+ * Provides precision configuration for the Node.js server
  */
 
-// 默认精度值
+// Default precision values
 export const DEFAULT_PX_DECIMALS = 4
 export const DEFAULT_SZ_DECIMALS = 6
 
-// 币种特定的精度配置
+// Asset-specific precision configuration
 export const COIN_PRECISION_CONFIG = {
-  // PERP 合约
+  // PERP contracts
   'DOGE-PERP': { szDecimals: 0, pxDecimals: 5, isPerp: true },
   'JUP-PERP': { szDecimals: 0, pxDecimals: 5, isPerp: true },
   'HYPE-PERP': { szDecimals: 2, pxDecimals: 3, isPerp: true },
   'ARB-PERP': { szDecimals: 0, pxDecimals: 5, isPerp: true },
   'DYDX-PERP': { szDecimals: 0, pxDecimals: 5, isPerp: true },
   'BTC-PERP': { szDecimals: 5, pxDecimals: 0, isPerp: true },
-  'ETH-PERP': { szDecimals: 4, pxDecimals: 1, isPerp: true },
+  'ETH-PERP': { szDecimals: 4, pxDecimals: 2, isPerp: true },
   'SOL-PERP': { szDecimals: 2, pxDecimals: 2, isPerp: true },
   'AVAX-PERP': { szDecimals: 2, pxDecimals: 3, isPerp: true },
   'MATIC-PERP': { szDecimals: 2, pxDecimals: 4, isPerp: true },
@@ -33,9 +33,10 @@ export const COIN_PRECISION_CONFIG = {
   'ATOM-PERP': { szDecimals: 2, pxDecimals: 4, isPerp: true },
   'PENGU-PERP': { szDecimals: 0, pxDecimals: 6, isPerp: true },
   'ANIME-PERP': { szDecimals: 0, pxDecimals: 6, isPerp: true },
+  'PUMP-PERP': { szDecimals: 0, pxDecimals: 6, isPerp: true },
 
 
-  // SPOT 现货
+  // SPOT markets
   'DOGE-SPOT': { szDecimals: 0, pxDecimals: 5, isPerp: false },
   'BTC-SPOT': { szDecimals: 5, pxDecimals: 0, isPerp: false },
   'ETH-SPOT': { szDecimals: 2, pxDecimals: 1, isPerp: false },
@@ -47,8 +48,9 @@ export const COIN_PRECISION_CONFIG = {
   'AAVE-SPOT': { szDecimals: 2, pxDecimals: 2, isPerp: false },
   'CRV-SPOT': { szDecimals: 2, pxDecimals: 4, isPerp: false },
   'BNB-SPOT': { szDecimals: 2, pxDecimals: 1, isPerp: false },
+  'PUMP-SPOT': { szDecimals: 0, pxDecimals: 6, isPerp: false },
 
-  // 基础币种（无后缀）
+  // Base assets (no suffix)
   'DOGE': { szDecimals: 0, pxDecimals: 5, isPerp: false },
   'BTC': { szDecimals: 5, pxDecimals: 0, isPerp: false },
   'ETH': { szDecimals: 2, pxDecimals: 1, isPerp: false },
@@ -61,22 +63,23 @@ export const COIN_PRECISION_CONFIG = {
   'CRV': { szDecimals: 2, pxDecimals: 4, isPerp: false },
   'BNB': { szDecimals: 2, pxDecimals: 1, isPerp: false },
   'ANIME': { szDecimals: 0, pxDecimals: 6, isPerp: false },
+  'PUMP': { szDecimals: 0, pxDecimals: 6, isPerp: false },
 }
 
 /**
- * 获取币种的完整精度配置
+ * Get the full precision configuration for a coin
  */
 export function getCoinPrecision(coin) {
   const coinUpper = coin.toUpperCase()
   console.log(`🔍 getCoinPrecision called with: "${coin}" -> "${coinUpper}"`)
   
-  // 直接匹配
+  // Direct match
   if (COIN_PRECISION_CONFIG[coinUpper]) {
     console.log(`✅ Direct match found for ${coinUpper}:`, COIN_PRECISION_CONFIG[coinUpper])
     return COIN_PRECISION_CONFIG[coinUpper]
   }
   
-  // 尝试不同的币种格式
+  // Try different coin format variants
   const variants = [
     coinUpper,
     coinUpper.replace('-PERP', ''),
@@ -93,7 +96,7 @@ export function getCoinPrecision(coin) {
     }
   }
   
-  // 回退到默认值
+  // Fallback to defaults
   return {
     szDecimals: DEFAULT_SZ_DECIMALS,
     pxDecimals: DEFAULT_PX_DECIMALS,
@@ -102,7 +105,7 @@ export function getCoinPrecision(coin) {
 }
 
 /**
- * 获取默认精度配置
+ * Get default precision configuration
  */
 export function getDefaultPrecision() {
   return {
@@ -112,16 +115,15 @@ export function getDefaultPrecision() {
 }
 
 /**
- * 获取szDecimals（向后兼容）
+ * Get szDecimals (backward compatibility)
  */
 export function getSzDecimals(coin) {
   return getCoinPrecision(coin).szDecimals
 }
 
 /**
- * 获取pxDecimals（向后兼容）
+ * Get pxDecimals (backward compatibility)
  */
 export function getPxDecimals(coin) {
   return getCoinPrecision(coin).pxDecimals
 }
-

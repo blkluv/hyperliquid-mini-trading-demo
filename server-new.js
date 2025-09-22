@@ -46,7 +46,7 @@ let isFetchingPrices = false
 const twapTasks = new Map()
 let twapTaskCounter = 0
 
-// 移除缓存，直接从Hyperliquid API获取数据
+// Remove caching; fetch directly from the Hyperliquid API
 const DEFAULT_SZ_DECIMALS = 6
 const DEFAULT_PX_DECIMALS = 4
 
@@ -150,11 +150,11 @@ const derivePxDecimalsForAsset = async (asset, ctx) => {
   return contextDecimals
 }
 
-// 移除缓存函数，直接从API获取数据
+// Remove cache helpers; rely on direct API calls
 
 const getNetworkName = () => (CONFIG.USE_TESTNET ? 'testnet' : 'mainnet')
 
-// 移除缓存初始化函数，直接从API获取数据
+// Remove cache initialization; rely on direct API calls
 
 // Get szDecimals directly from Hyperliquid API
 const getSzDecimals = async (coin) => {
@@ -283,7 +283,7 @@ const initializeSDK = async () => {
     console.log('✅ SDK initialized successfully!')
     console.log(`📊 Found ${meta.universe.length} assets`)
     
-    // 移除缓存初始化，直接从API获取数据
+// Remove cache initialization; fetch directly from the API
     
     // Start price polling only after successful initialization
     if (pricePollInterval) {
@@ -351,7 +351,7 @@ app.get('/api/asset-metadata/:coin', async (req, res) => {
       res.status(404).json({ 
         error: `Asset ${coin} not found`,
         found: false,
-        availableAssets: ['BTC-PERP', 'ETH-PERP', 'SOL-PERP', 'DOGE-PERP'] // 示例资产列表
+        availableAssets: ['BTC-PERP', 'ETH-PERP', 'SOL-PERP', 'DOGE-PERP'] // Example asset list
       })
     }
   } catch (error) {
@@ -360,7 +360,7 @@ app.get('/api/asset-metadata/:coin', async (req, res) => {
   }
 })
 
-// 移除缓存状态端点，不再使用缓存
+// Remove cache status endpoint; caching no longer used
 
 // Get top 10 coins ranked by 24h notional volume
 app.get('/api/top-coins', async (req, res) => {
@@ -1699,14 +1699,14 @@ const getSizePrecision = (increment) => {
 }
 
 
-// 从API元数据获取szDecimals
+// Get szDecimals from API metadata
 const getSzDecimalsFromMeta = (coin) => {
   try {
     if (!infoClient) {
       return getDefaultSzDecimals(coin)
     }
     
-    // 从缓存的元数据中获取szDecimals
+    // Read szDecimals from cached metadata
     const meta = infoClient.meta()
     if (meta && meta.universe) {
       const asset = meta.universe.find(a => a.name === coin)
@@ -1715,7 +1715,7 @@ const getSzDecimalsFromMeta = (coin) => {
       }
     }
     
-    // 静默回退到默认值，不显示警告
+    // Silently fall back to defaults without warnings
     return getDefaultSzDecimals(coin)
   } catch (error) {
     console.error(`Error getting szDecimals for ${coin}:`, error)
@@ -1723,7 +1723,7 @@ const getSzDecimalsFromMeta = (coin) => {
   }
 }
 
-// 默认szDecimals配置 - 使用hyperliquidPrecisionConfig
+// Default szDecimals configuration - use hyperliquidPrecisionConfig
 const getDefaultSzDecimals = (coin) => {
   try {
     const precision = getCoinPrecision(coin)
@@ -1735,7 +1735,7 @@ const getDefaultSzDecimals = (coin) => {
 }
 
 const getFormattedSubOrderSizes = (task) => {
-  // 使用从API获取的szDecimals，而不是硬编码的精度
+  // Use szDecimals from the API instead of hard-coded precision
   const szDecimals = getSzDecimalsFromMeta(task.coin)
   const sizePrecision = szDecimals
 
@@ -1743,7 +1743,7 @@ const getFormattedSubOrderSizes = (task) => {
     ? task.subOrderSizes
     : Array(parseInt(task.intervals, 10) || 0).fill(task.totalSize / task.intervals)
 
-  // 使用Hyperliquid精度规则格式化大小
+  // Format sizes using Hyperliquid precision rules
   const formattedSizes = rawSizes.map(size => {
     const roundedSize = Math.round(size * Math.pow(10, sizePrecision)) / Math.pow(10, sizePrecision)
     return roundedSize.toFixed(sizePrecision)
@@ -1758,7 +1758,7 @@ const getFormattedSubOrderSizes = (task) => {
 }
 
 const distributeSubOrderSizes = (totalSize, intervals, coin) => {
-  // 使用从API获取的szDecimals，而不是硬编码的精度
+  // Use szDecimals from the API instead of hard-coded precision
   const szDecimals = getSzDecimalsFromMeta(coin)
   const precision = szDecimals
   const minSize = getMinOrderSize(coin)
@@ -1773,7 +1773,7 @@ const distributeSubOrderSizes = (totalSize, intervals, coin) => {
     throw new Error('Invalid total size for TWAP order')
   }
 
-  // 直接使用szDecimals进行精度处理，而不是基于increment
+  // Use szDecimals directly for precision, not increment-based
   const baseSize = sanitizedTotalSize / intervalCount
   const roundedBaseSize = Math.round(baseSize * Math.pow(10, precision)) / Math.pow(10, precision)
   

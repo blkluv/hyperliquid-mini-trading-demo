@@ -207,11 +207,27 @@ export const useTrading = () => {
     if (!hyperliquidService.isReady()) return
 
     try {
+      // Prefer a user-provided read-only address if available
+      const getReadOnlyAddress = (): string | undefined => {
+        try {
+          // Support both localStorage key and a global flag for convenience
+          const w: any = typeof window !== 'undefined' ? window : undefined
+          const fromGlobal = w && typeof w.__READ_ONLY_ADDRESS === 'string' && w.__READ_ONLY_ADDRESS.length > 0
+            ? (w.__READ_ONLY_ADDRESS as string)
+            : undefined
+          const fromStorage = w && w.localStorage ? (w.localStorage.getItem('READ_ONLY_ADDRESS') || undefined) : undefined
+          return (fromGlobal || fromStorage)?.trim() || undefined
+        } catch {
+          return undefined
+        }
+      }
+      const readOnlyAddress = getReadOnlyAddress()
+
       // Get wallet balance for account info
-      const walletBalance = await hyperliquidService.getWalletBalance()
+      const walletBalance = await hyperliquidService.getWalletBalance(readOnlyAddress)
       
       // Get clearinghouse state for additional info
-      const clearinghouseState = await hyperliquidService.getClearinghouseState()
+      const clearinghouseState = await hyperliquidService.getClearinghouseState(readOnlyAddress)
 
       // Update account info based on the response
       if (walletBalance) {
@@ -860,18 +876,45 @@ export const useTrading = () => {
 
   // Helper function to format price according to Hyperliquid precision requirements
   const formatPriceForTickSize = (price: number, coin: string): string => {
+    // Uses Hyperliquid rules; trims redundant zeros for user-facing inputs; keeps ETH with at least one decimal
     try {
-      return formatHyperliquidPriceSync(price, coin)
+      let s = formatHyperliquidPriceSync(price, coin)
+      const isEth = (coin || '').toUpperCase().startsWith('ETH')
+      if (s.includes('.')) {
+        if (/\.0+$/.test(s)) {
+          s = isEth ? s.replace(/\.0+$/, '.0') : s.replace(/\.0+$/, '')
+        } else {
+          s = s.replace(/(\.\d*?[1-9])0+$/, '$1')
+        }
+        if (!isEth) {
+          s = s.replace(/\.$/, '')
+        }
+      } else if (isEth) {
+        s = `${s}.0`
+      }
+      return s
     } catch (error) {
       console.error('Error formatting price:', error)
       // Fallback to original logic if precision formatting fails
       const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin)
-      const pxDecimals = assetInfo.pxDecimals
-      const tickSize = pxDecimals > 0 ? Math.pow(10, -pxDecimals) : 1
-      // Use Math.ceil to match Hyperliquid's rounding behavior (round up)
+      const ruleDecimals = HyperliquidPrecision.getMaxPriceDecimals(assetInfo.szDecimals, assetInfo.isPerp)
+      const tickSize = ruleDecimals > 0 ? Math.pow(10, -ruleDecimals) : 1
       const roundedPrice = Math.ceil(price / tickSize) * tickSize
-      const decimalPlaces = pxDecimals > 0 ? pxDecimals : 0
-      return roundedPrice.toFixed(decimalPlaces)
+      let s = roundedPrice.toFixed(ruleDecimals > 0 ? ruleDecimals : 0)
+      const isEth = (coin || '').toUpperCase().startsWith('ETH')
+      if (s.includes('.')) {
+        if (/\.0+$/.test(s)) {
+          s = isEth ? s.replace(/\.0+$/, '.0') : s.replace(/\.0+$/, '')
+        } else {
+          s = s.replace(/(\.\d*?[1-9])0+$/, '$1')
+        }
+        if (!isEth) {
+          s = s.replace(/\.$/, '')
+        }
+      } else if (isEth) {
+        s = `${s}.0`
+      }
+      return s
     }
   }
 

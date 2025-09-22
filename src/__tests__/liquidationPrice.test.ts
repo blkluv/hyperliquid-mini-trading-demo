@@ -182,7 +182,7 @@ describe('calculateLiquidationPriceFromInputs', () => {
     expect(liquidationPrice).toBeCloseTo(54320.9877, 4)
   })
 
-  it('uses provided cross margin equity even when below the initial margin requirement', () => {
+  it('uses at least initial margin when provided cross equity is below requirement', () => {
     const liquidationPrice = calculateLiquidationPriceFromInputs({
       entryPrice: 20000,
       leverage: 20,
@@ -193,10 +193,11 @@ describe('calculateLiquidationPriceFromInputs', () => {
       positionSize: 1,
     })
 
-    expect(liquidationPrice).toBeCloseTo(20151.8987, 4)
+    // With cross mode we assume at least the initial margin is sourced
+    expect(liquidationPrice).toBeCloseTo(19240.5063, 4)
   })
 
-  it('derives cross liquidation using transfer requirement fallback when account equity is omitted', () => {
+  it('derives cross liquidation using transfer requirement fallback (capped to at least initial margin)', () => {
     const liquidationPrice = calculateLiquidationPriceFromInputs({
       entryPrice: 115510,
       leverage: 9,
@@ -208,10 +209,10 @@ describe('calculateLiquidationPriceFromInputs', () => {
       positionSize: 1,
     })
 
-    expect(liquidationPrice).toBeCloseTo(107338.035, 3)
+    expect(liquidationPrice).toBeCloseTo(103975.246, 3)
   })
 
-  it('respects margin tier deductions when provided', () => {
+  it('respects margin tier deductions when provided (cross equity at least initial margin)', () => {
     const liquidationPrice = calculateLiquidationPriceFromInputs({
       entryPrice: 50000,
       leverage: 5,
@@ -227,6 +228,7 @@ describe('calculateLiquidationPriceFromInputs', () => {
       maxLeverage: 40,
     })
 
-    expect(liquidationPrice).toBeCloseTo(49519.2308, 4)
+    // Initial margin here is 200,000,000 / 5 = 40,000,000, which dominates account equity
+    expect(liquidationPrice).toBeCloseTo(40544.8718, 4)
   })
 })

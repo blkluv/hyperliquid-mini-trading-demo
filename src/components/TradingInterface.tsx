@@ -8,7 +8,7 @@ import { CONFIG } from '../config/config'
 import { TradingConfigHelper } from '../config/tradingConfig'
 import { hyperliquidService } from '../services/hyperliquidService'
 import { validateHyperliquidPrice, validateHyperliquidSizeSync, formatHyperliquidPriceSync, formatHyperliquidSizeSync, getHyperliquidSizeValidationError, validateHyperliquidPriceSync, HyperliquidPrecision } from '../utils/hyperliquidPrecision'
-import { calculateIsolatedMarginRequirement, calculateLiquidationPriceFromInputs } from '../utils/liquidationPrice'
+import { calculateIsolatedMarginRequirement, calculateLiquidationPriceFromInputs, calculateLiquidationWithDetailsFromInputs } from '../utils/liquidationPrice'
 import { leverageService, LeverageInfo } from '../services/leverageService'
 
 const applyMaxDigitLimit = (value: string, maxDigits = 12) => {
@@ -62,7 +62,7 @@ const moveCursorToEnd = (inputEl?: HTMLInputElement) => {
   }
 }
 
-// 移除validateLeadingZeros函数，使用normalizeLeadingZeros代替
+// Remove validateLeadingZeros function; use normalizeLeadingZeros instead
 
 
 const normalizeLeadingZeros = (value: string) => {
@@ -241,58 +241,28 @@ const TradingInterface: React.FC = () => {
     pxDecimals: null
   })
 
-  const precisionCacheRef = React.useRef<Record<string, { sz?: number; px?: number }>>({})
-
-  const recordPrecision = React.useCallback((symbol: string, sz?: number | null, px?: number | null) => {
+  const getSzDecimals = React.useCallback((symbol: string): number => {
     const upper = symbol.toUpperCase()
-    const base = upper.replace(/-(PERP|SPOT)$/i, '')
-
-    const update = (key: string, field: 'sz' | 'px', value: number) => {
-      precisionCacheRef.current[key] = {
-        ...precisionCacheRef.current[key],
-        [field]: value
-      }
-    }
-
-    if (typeof sz === 'number' && Number.isFinite(sz)) {
-      update(upper, 'sz', sz)
-      update(base, 'sz', sz)
-    }
-
-    if (typeof px === 'number' && Number.isFinite(px)) {
-      update(upper, 'px', px)
-      update(base, 'px', px)
-    }
+    const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(upper)
+    return assetInfo.szDecimals
   }, [])
 
-  const getCachedSzDecimals = React.useCallback((symbol: string): number => {
+  const getPxDecimals = React.useCallback((symbol: string): number => {
     const upper = symbol.toUpperCase()
-    const cached = precisionCacheRef.current[upper]?.sz
-    if (typeof cached === 'number') {
-      return cached
-    }
     const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(upper)
-    recordPrecision(upper, assetInfo.szDecimals, assetInfo.pxDecimals)
-    return assetInfo.szDecimals
-  }, [recordPrecision])
-
-  const getCachedPxDecimals = React.useCallback((symbol: string): number => {
-    const upper = symbol.toUpperCase()
-    const cached = precisionCacheRef.current[upper]?.px
-    if (typeof cached === 'number') {
-      return cached
-    }
-    const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(upper)
-    recordPrecision(upper, assetInfo.szDecimals, assetInfo.pxDecimals)
-    return assetInfo.pxDecimals
-  }, [recordPrecision])
+    
+    // Compute the maximum allowed decimal places using the new rules
+    const maxPxDecimals = HyperliquidPrecision.getMaxPriceDecimals(assetInfo.szDecimals, assetInfo.isPerp)
+    
+    return maxPxDecimals
+  }, [])
 
   const formatPriceWithPrecision = React.useCallback((price: number, coin: string): string => {
     try {
       return formatPriceForTickSize(price, coin)
     } catch (error) {
       console.warn('Failed to format price with tick size, falling back to decimals:', error)
-      const decimals = getCachedPxDecimals(coin)
+      const decimals = getPxDecimals(coin)
       if (decimals <= 0) {
         return Math.ceil(price).toString()
       }
@@ -301,7 +271,64 @@ const TradingInterface: React.FC = () => {
       const rounded = Math.ceil(price * multiplier) / multiplier
       return rounded.toFixed(decimals)
     }
-  }, [formatPriceForTickSize, getCachedPxDecimals])
+  }, [formatPriceForTickSize, getPxDecimals])
+
+  // Strict tick-based rounding (ceil) for displaying Liquidation Price only
+  const formatLiqPriceForDisplayTick = React.useCallback((price: number, coin: string): string => {
+    try {
+      const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin)
+      const pxDecimals = typeof assetInfo.pxDecimals === 'number' ? assetInfo.pxDecimals : 0
+      const multiplier = Math.pow(10, pxDecimals)
+      const rounded = Math.ceil(price * multiplier) / multiplier
+      return rounded.toLocaleString('en-US', {
+        minimumFractionDigits: pxDecimals,
+        maximumFractionDigits: pxDecimals,
+      })
+    } catch (error) {
+      const rounded = Math.ceil(price)
+      return rounded.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+    }
+  }, [])
+
+  // Format a price for UI: apply Hyperliquid rules first, then add thousands separators
+  const formatPriceForDisplay = React.useCallback((price: number, coin: string): string => {
+    try {
+      let formatted = formatHyperliquidPriceSync(price, coin)
+      const isEth = (coin || '').toUpperCase().startsWith('ETH')
+
+      // Trim trailing zeros after decimal while respecting ETH's 1-decimal display preference
+      if (formatted.includes('.')) {
+        if (/\.0+$/.test(formatted)) {
+          // e.g., 4182.00 -> 4182.0 for ETH, or -> 4182 for others
+          formatted = isEth ? formatted.replace(/\.0+$/, '.0') : formatted.replace(/\.0+$/, '')
+        } else {
+          formatted = formatted.replace(/(\.\d*?[1-9])0+$/, '$1') // 4165.10 -> 4165.1, 0.1200 -> 0.12
+        }
+        if (!isEth) {
+          formatted = formatted.replace(/\.$/, '') // remove dangling dot for non-ETH
+        }
+      } else if (isEth) {
+        // Ensure at least one decimal for ETH when integer
+        formatted = `${formatted}.0`
+      }
+      // Do not re-trim decimals beyond precision output; rely on precision rules already applied
+
+      const decimalIndex = formatted.indexOf('.')
+      const decimals = decimalIndex === -1 ? 0 : (formatted.length - decimalIndex - 1)
+      const numeric = parseFloat(formatted)
+      return numeric.toLocaleString('en-US', {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals
+      })
+    } catch (error) {
+      // Fallback: use computed px decimals under new rules
+      const decimals = getPxDecimals(coin)
+      return price.toLocaleString('en-US', {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals
+      })
+    }
+  }, [getPxDecimals])
 
   const formatSizeWithPrecision = React.useCallback((size: number, coin: string): string => {
     const coinKey = coin.includes('-') ? coin : `${coin}-PERP`
@@ -309,7 +336,7 @@ const TradingInterface: React.FC = () => {
       return formatHyperliquidSizeSync(size, coinKey)
     } catch (error) {
       console.warn('Failed to format size with precision, falling back to cached decimals:', error)
-      const decimals = getCachedSzDecimals(coinKey)
+      const decimals = getSzDecimals(coinKey)
       if (decimals <= 0) {
         return Math.floor(size).toString()
       }
@@ -317,7 +344,7 @@ const TradingInterface: React.FC = () => {
       const rounded = Math.round(size * multiplier) / multiplier
       return rounded.toFixed(decimals)
     }
-  }, [getCachedSzDecimals])
+  }, [getSzDecimals])
 
   const formatNotionalVolume = React.useCallback((volume?: number) => {
     if (typeof volume !== 'number' || !Number.isFinite(volume) || volume <= 0) {
@@ -650,7 +677,7 @@ const TradingInterface: React.FC = () => {
   // Generic coin-specific rounding function
   const roundCoinSize = (rawSize: number, baseCoin: string): number => {
     const coinKey = `${baseCoin}-PERP`
-    const precision = getCachedSzDecimals(coinKey)
+    const precision = getSzDecimals(coinKey)
     
     if (precision === 0) {
       return Math.floor(rawSize)
@@ -666,7 +693,7 @@ const TradingInterface: React.FC = () => {
     const rawSize = usdAmount / coinPrice
     
     try {
-      const szDecimals = getCachedSzDecimals(coin)
+      const szDecimals = getSzDecimals(coin)
 
       // Round DOWN according to coin size decimal
       let roundedSize: number
@@ -792,12 +819,11 @@ const sanitizePriceInput = (
     let maxDecimals: number | undefined
 
     try {
-      const precisionHint = typeof assetPrecision.pxDecimals === 'number'
-        ? assetPrecision.pxDecimals
-        : getCachedPxDecimals(coinForPrecision)
-
-      if (Number.isFinite(precisionHint) && precisionHint >= 0) {
-        maxDecimals = precisionHint
+      // Use only new rules for max decimals (ignore cached pxDecimals from config)
+      const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coinForPrecision)
+      const maxPxDecimals = HyperliquidPrecision.getMaxPriceDecimals(assetInfo.szDecimals, assetInfo.isPerp)
+      if (Number.isFinite(maxPxDecimals) && maxPxDecimals >= 0) {
+        maxDecimals = maxPxDecimals
       }
     } catch (error) {
       console.warn('⚠️ Failed to resolve pxDecimals during price change:', error)
@@ -819,6 +845,7 @@ const sanitizePriceInput = (
       return null
     }
 
+    // First enforce decimal-place limit (Rule 2)
     if (typeof maxDecimals === 'number') {
       if (maxDecimals === 0) {
         normalizedEnforced = parts[0]
@@ -828,6 +855,30 @@ const sanitizePriceInput = (
           normalizedEnforced = `${parts[0]}.${truncatedDecimal}`
         } else {
           normalizedEnforced = hadTrailingDot ? `${parts[0]}.` : parts[0]
+        }
+      }
+    }
+
+    // Then enforce significant digits limit for prices with decimals (Rule 1)
+    // Integer prices are exempt; skip while user is typing a trailing dot
+    if (!hadTrailingDot) {
+      const withParts = normalizedEnforced.split('.')
+      if (withParts.length === 2) {
+        const integerRaw = withParts[0]
+        // Remove leading zeros for digit counting
+        const integerStr = integerRaw.replace(/^0+/, '')
+        const integerDigits = integerStr === '' ? 0 : integerStr.length
+        const allowedBySig = Math.max(0, 5 - integerDigits)
+
+        // Final allowed decimals is min(Rule2, Rule1) when decimals exist
+        let rule2Max = typeof maxDecimals === 'number' ? maxDecimals : Infinity
+        const finalAllowed = Math.max(0, Math.min(rule2Max, allowedBySig))
+
+        if (finalAllowed === 0) {
+          // No decimals allowed due to 5 significant-digit rule
+          normalizedEnforced = withParts[0]
+        } else if (withParts[1].length > finalAllowed) {
+          normalizedEnforced = `${withParts[0]}.${withParts[1].substring(0, finalAllowed)}`
         }
       }
     }
@@ -1001,20 +1052,28 @@ const sanitizePriceInput = (
               }
             })
 
-            HyperliquidPrecision.primeCacheFromCoins(normalizedCoins)
-            normalizedCoins.forEach(coin => {
-              recordPrecision(coin.symbol, coin.szDecimals, coin.pxDecimals)
+            // Sort by 24h notional volume (desc) and keep top 6
+            const sorted = [...normalizedCoins].sort((a, b) => {
+              const aVol = (typeof a.dayNotionalVolume === 'number' ? a.dayNotionalVolume : 0)
+              const bVol = (typeof b.dayNotionalVolume === 'number' ? b.dayNotionalVolume : 0)
+              if (bVol !== aVol) return bVol - aVol
+              // Fallback: use base volume * markPrice if notional missing
+              const aAlt = (a.dayBaseVolume ?? 0) * (a.markPrice ?? a.midPrice ?? 0)
+              const bAlt = (b.dayBaseVolume ?? 0) * (b.markPrice ?? b.midPrice ?? 0)
+              return bAlt - aAlt
             })
-            setTopCoins(normalizedCoins)
-            console.log('📊 Top coins from API (fallback precision applied):', normalizedCoins)
+            const top6 = sorted.slice(0, 6)
+
+            HyperliquidPrecision.primeCacheFromCoins(top6)
+            setTopCoins(top6)
+            console.log('📊 Top 6 coins from API (sorted by volume):', top6)
           } else {
             console.error('❌ Top coins response missing coins array')
           }
         } else {
           console.error('❌ Failed to fetch top coins:', response.status)
-          const fallbackCoins = CONFIG.AVAILABLE_COINS.map(coin => {
+          const fallbackCoinsAll = CONFIG.AVAILABLE_COINS.map(coin => {
             const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin.symbol)
-            recordPrecision(coin.symbol, assetInfo.szDecimals, assetInfo.pxDecimals)
             return {
             symbol: coin.symbol,
             name: coin.name,
@@ -1023,14 +1082,14 @@ const sanitizePriceInput = (
               pxDecimals: assetInfo.pxDecimals
             }
           })
-          HyperliquidPrecision.primeCacheFromCoins(fallbackCoins)
-          setTopCoins(fallbackCoins)
+          const fallbackTop6 = fallbackCoinsAll.slice(0, 6)
+          HyperliquidPrecision.primeCacheFromCoins(fallbackTop6)
+          setTopCoins(fallbackTop6)
         }
       } catch (error) {
         console.error('❌ Error fetching top coins:', error)
-        const fallbackCoins = CONFIG.AVAILABLE_COINS.map(coin => {
+        const fallbackCoinsAll = CONFIG.AVAILABLE_COINS.map(coin => {
           const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin.symbol)
-          recordPrecision(coin.symbol, assetInfo.szDecimals, assetInfo.pxDecimals)
           return {
           symbol: coin.symbol,
           name: coin.name,
@@ -1039,13 +1098,14 @@ const sanitizePriceInput = (
             pxDecimals: assetInfo.pxDecimals
           }
         })
-        HyperliquidPrecision.primeCacheFromCoins(fallbackCoins)
-        setTopCoins(fallbackCoins)
+        const fallbackTop6 = fallbackCoinsAll.slice(0, 6)
+        HyperliquidPrecision.primeCacheFromCoins(fallbackTop6)
+        setTopCoins(fallbackTop6)
       }
     }
     
     fetchTopCoins()
-  }, [recordPrecision])
+  }, [])
 
   // Fetch precision metadata for the selected coin
   useEffect(() => {
@@ -1071,7 +1131,6 @@ const sanitizePriceInput = (
     let needsFetch = true
 
     if (topCoinEntry) {
-      recordPrecision(topCoinEntry.symbol, topCoinEntry.szDecimals, topCoinEntry.pxDecimals)
       applyPrecision(topCoinEntry.szDecimals ?? null, topCoinEntry.pxDecimals ?? null)
       needsFetch = !(
         typeof topCoinEntry.szDecimals === 'number' &&
@@ -1086,7 +1145,6 @@ const sanitizePriceInput = (
 
       try {
         const precision = await HyperliquidPrecision.getAssetInfo(state.selectedCoin)
-        recordPrecision(state.selectedCoin, precision.szDecimals, precision.pxDecimals)
         applyPrecision(precision.szDecimals ?? null, precision.pxDecimals ?? null)
       } catch (error) {
         console.error('Failed to load asset precision for', state.selectedCoin, error)
@@ -1101,7 +1159,7 @@ const sanitizePriceInput = (
     return () => {
       isMounted = false
     }
-  }, [state.selectedCoin, topCoins, recordPrecision])
+  }, [state.selectedCoin, topCoins])
 
   // Note: Auto-calculation is now handled in individual handlers to avoid infinite loops
   // The bidirectional updates are handled in:
@@ -1819,51 +1877,21 @@ const storeLeveragePreference = (coin: string, marginMode: 'isolated' | 'cross',
 }
 
 const handleScaleStartPriceChange = (value: string, inputEl?: HTMLInputElement) => {
-  const trimmedValue = value.trim()
-  let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
-  numericValue = normalizeLeadingZeros(numericValue)
-
-  if (!isValidDecimalInsertion(numericValue, state.scaleStartPrice || '', undefined)) {
-        return
-      }
-      
-  const enforcedValue = enforceMaxDigits(numericValue, state.scaleStartPrice || '', inputEl)
-  if (enforcedValue === null) {
+  const normalizedEnforced = sanitizePriceInput(value, state.scaleStartPrice || '', state.selectedCoin, inputEl)
+  if (normalizedEnforced === null) {
     return
   }
-  numericValue = normalizeLeadingZeros(enforcedValue)
-
-  const parts = numericValue.split('.')
-  if (parts.length > 2) {
-    return
-  }
-
   markFieldAsTouched('scaleStartPrice')
-  setState(prev => ({ ...prev, scaleStartPrice: numericValue }))
+  setState(prev => ({ ...prev, scaleStartPrice: normalizedEnforced }))
 }
 
 const handleScaleEndPriceChange = (value: string, inputEl?: HTMLInputElement) => {
-    const trimmedValue = value.trim()
-    let numericValue = trimmedValue.replace(/[^0-9.]/g, '')
-  numericValue = normalizeLeadingZeros(numericValue)
-
-  if (!isValidDecimalInsertion(numericValue, state.scaleEndPrice || '', undefined)) {
+  const normalizedEnforced = sanitizePriceInput(value, state.scaleEndPrice || '', state.selectedCoin, inputEl)
+  if (normalizedEnforced === null) {
     return
   }
-
-  const enforcedValue = enforceMaxDigits(numericValue, state.scaleEndPrice || '', inputEl)
-  if (enforcedValue === null) {
-    return
-  }
-  numericValue = normalizeLeadingZeros(enforcedValue)
-
-    const parts = numericValue.split('.')
-  if (parts.length > 2) {
-    return
-  }
-
   markFieldAsTouched('scaleEndPrice')
-  setState(prev => ({ ...prev, scaleEndPrice: numericValue }))
+  setState(prev => ({ ...prev, scaleEndPrice: normalizedEnforced }))
 }
 
 const handleScaleOrderCountChange = (value: string, inputEl?: HTMLInputElement) => {
@@ -1927,7 +1955,18 @@ const handleTwapNumericChange = (field: 'twapRunningTimeHours' | 'twapRunningTim
       numericValue = numericValue.replace(/\./g, '')
     numericValue = normalizeLeadingZeros(numericValue)
     } else {
-    if (!isValidDecimalInsertion(numericValue, previousValue, undefined)) {
+    // Use new rules to calculate max price decimals for TWAP price offset
+    let maxDecimals: number | undefined = undefined
+    if (field === 'twapPriceOffset') {
+      try {
+        const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(state.selectedCoin)
+        maxDecimals = HyperliquidPrecision.getMaxPriceDecimals(assetInfo.szDecimals, assetInfo.isPerp)
+      } catch (error) {
+        console.warn('Error getting price precision for TWAP price offset:', error)
+      }
+    }
+    
+    if (!isValidDecimalInsertion(numericValue, previousValue, maxDecimals)) {
       return
     }
 
@@ -1972,11 +2011,11 @@ const handleTPSLChange = (field: 'takeProfitPrice' | 'stopLossPrice' | 'takeProf
   if (isSignedField) {
     maxDecimals = 2 // Limit gain/loss to 2 decimal places
   } else if (field === 'takeProfitPrice' || field === 'stopLossPrice') {
-    // Use coin's price decimal precision for TP/SL prices
+    // Use new rules to calculate max price decimals for TP/SL prices
     try {
       const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(state.selectedCoin)
-      maxDecimals = assetInfo.pxDecimals
-      console.log(`🔍 TP/SL price precision for ${state.selectedCoin}: ${maxDecimals} decimals`)
+      maxDecimals = HyperliquidPrecision.getMaxPriceDecimals(assetInfo.szDecimals, assetInfo.isPerp)
+      console.log(`🔍 TP/SL price precision for ${state.selectedCoin}: ${maxDecimals} decimals (new rules)`)
     } catch (error) {
       console.error('Error getting price precision for TP/SL price:', error)
       maxDecimals = 4
@@ -2035,7 +2074,7 @@ const handleTPSLChange = (field: 'takeProfitPrice' | 'stopLossPrice' | 'takeProf
             const priceDelta = gainFraction / leverage
             const adjustedPrice = referencePrice * (prev.side === 'buy' ? 1 + priceDelta : 1 - priceDelta)
             // Ensure price doesn't exceed 12 digits and follows precision rules
-            const formattedPrice = formatPriceWithPrecision(adjustedPrice, state.selectedCoin)
+            const formattedPrice = formatPriceForTickSize(adjustedPrice, state.selectedCoin)
             const digitsOnly = formattedPrice.replace(/[^0-9]/g, '')
             if (digitsOnly.length <= 12) {
               newState.takeProfitPrice = formattedPrice
@@ -2052,7 +2091,7 @@ const handleTPSLChange = (field: 'takeProfitPrice' | 'stopLossPrice' | 'takeProf
               const priceDelta = gainFraction / leverage
               const adjustedPrice = referencePrice * (prev.side === 'buy' ? 1 + priceDelta : 1 - priceDelta)
               // Ensure price doesn't exceed 12 digits and follows precision rules
-              const formattedPrice = formatPriceWithPrecision(adjustedPrice, state.selectedCoin)
+              const formattedPrice = formatPriceForTickSize(adjustedPrice, state.selectedCoin)
               const digitsOnly = formattedPrice.replace(/[^0-9]/g, '')
               if (digitsOnly.length <= 12) {
                 newState.takeProfitPrice = formattedPrice
@@ -2069,7 +2108,7 @@ const handleTPSLChange = (field: 'takeProfitPrice' | 'stopLossPrice' | 'takeProf
             const priceDelta = lossFraction / leverage
             const adjustedPrice = referencePrice * (prev.side === 'buy' ? 1 - priceDelta : 1 + priceDelta)
             // Ensure price doesn't exceed 12 digits and follows precision rules
-            const formattedPrice = formatPriceWithPrecision(adjustedPrice, state.selectedCoin)
+            const formattedPrice = formatPriceForTickSize(adjustedPrice, state.selectedCoin)
             const digitsOnly = formattedPrice.replace(/[^0-9]/g, '')
             if (digitsOnly.length <= 12) {
               newState.stopLossPrice = formattedPrice
@@ -2086,7 +2125,7 @@ const handleTPSLChange = (field: 'takeProfitPrice' | 'stopLossPrice' | 'takeProf
               const priceDelta = lossFraction / leverage
               const adjustedPrice = referencePrice * (prev.side === 'buy' ? 1 - priceDelta : 1 + priceDelta)
               // Ensure price doesn't exceed 12 digits and follows precision rules
-              const formattedPrice = formatPriceWithPrecision(adjustedPrice, state.selectedCoin)
+              const formattedPrice = formatPriceForTickSize(adjustedPrice, state.selectedCoin)
               const digitsOnly = formattedPrice.replace(/[^0-9]/g, '')
               if (digitsOnly.length <= 12) {
                 newState.stopLossPrice = formattedPrice
@@ -2283,7 +2322,6 @@ const handleScaleEndPriceBlur = () => {
       try {
         const metadata = await HyperliquidPrecision.getAssetMetadata(coin)
         if (metadata) {
-          recordPrecision(coin, metadata.szDecimals, metadata.pxDecimals)
         }
       } catch (precisionError) {
         console.warn(`⚠️ Failed to refresh precision metadata for ${coin}:`, precisionError)
@@ -2509,10 +2547,11 @@ const handleScaleEndPriceBlur = () => {
                       ? accountInfo.marginRequired
                       : 0)
 
+              const totalEquityFallback = accountInfo.availableToTrade + (Number.isFinite(derivedTransferRequirement) ? derivedTransferRequirement : accountInfo.marginRequired || 0)
               const accountValue =
-                typeof accountInfo.accountValue === 'number' && Number.isFinite(accountInfo.accountValue)
+                typeof accountInfo.accountValue === 'number' && Number.isFinite(accountInfo.accountValue) && accountInfo.accountValue > 0
                   ? accountInfo.accountValue
-                  : accountInfo.availableToTrade + (Number.isFinite(derivedTransferRequirement) ? derivedTransferRequirement : accountInfo.marginRequired || 0)
+                  : totalEquityFallback
               const isolatedMargin = state.marginMode === 'isolated'
                 ? calculateIsolatedMarginRequirement(positionSize, entryPrice, state.leverage)
                 : 0
@@ -2522,7 +2561,24 @@ const handleScaleEndPriceBlur = () => {
                 maxLeverage: tier.maxLeverage
               })).filter(tier => Number.isFinite(tier.lowerBound) && tier.maxLeverage > 0)
 
-              const liquidationPrice = calculateLiquidationPriceFromInputs({
+              if ((window as any).__LIQ_DEBUG === true) {
+                console.log('[LIQ DEBUG][UI CALL]', {
+                  entryPrice,
+                  leverage: state.leverage,
+                  side: state.side,
+                  coin: state.selectedCoin,
+                  marginMode: state.marginMode,
+                  walletBalance: accountInfo.availableToTrade,
+                  positionSize,
+                  accountValue,
+                  isolatedMargin,
+                  transferRequirement: derivedTransferRequirement,
+                  marginTiers,
+                  maxLeverage: leverageInfo?.maxLeverage,
+                })
+              }
+
+              const details = calculateLiquidationWithDetailsFromInputs({
                 entryPrice,
                 leverage: state.leverage,
                 side: state.side,
@@ -2536,13 +2592,17 @@ const handleScaleEndPriceBlur = () => {
                 marginTiers,
                 maxLeverage: leverageInfo?.maxLeverage
               })
+              const liquidationPrice = details.price
+              if ((window as any).__LIQ_DEBUG === true) {
+                console.log('[LIQ DEBUG][UI RESULT]', { liquidationPrice, details })
+              }
           
           // Handle negative liquidation price (very safe position in cross margin)
           if (liquidationPrice < 0) {
                 return `N/A`
           }
           
-          return `$${formatPriceWithPrecision(liquidationPrice, state.selectedCoin)}`
+          return `$${formatLiqPriceForDisplayTick(liquidationPrice, state.selectedCoin)}`
             } catch (error) {
               console.error('Failed to calculate liquidation price:', error)
             }
@@ -3005,21 +3065,7 @@ const handleScaleEndPriceBlur = () => {
                 {priceError ? (
                   <span className="text-red-400">{priceError}</span>
                 ) : currentPrice ? (
-                  (() => {
-                    try {
-                      const formattedPrice = formatHyperliquidPriceSync(currentPrice, state.selectedCoin)
-                      // Add comma formatting to the precision-formatted price
-                      const numericPrice = parseFloat(formattedPrice)
-                      // Get coin's decimal precision for comma formatting
-                      const pxDecimals = getCachedPxDecimals(state.selectedCoin)
-                      return `$${formatNumberWithCommas(numericPrice, pxDecimals)}`
-                    } catch (error) {
-                      console.error('Error formatting current price:', error)
-                      // Get coin's decimal precision for comma formatting
-                      const pxDecimals = getCachedPxDecimals(state.selectedCoin)
-                      return `$${formatNumberWithCommas(currentPrice, pxDecimals)}`
-                    }
-                  })()
+                  `$${formatPriceForDisplay(currentPrice, state.selectedCoin)}`
                 ) : priceConnected ? (
                   <span className="text-gray-400">Loading...</span>
                 ) : (
@@ -3101,20 +3147,7 @@ const handleScaleEndPriceBlur = () => {
                   {/* Last Price Column */}
                   <div className="text-white text-right">
                     {coinPrice ? (
-                      (() => {
-                        try {
-                          const formattedPrice = formatHyperliquidPriceSync(coinPrice, coin.symbol)
-                          // Add comma formatting to the precision-formatted price
-                          const numericPrice = parseFloat(formattedPrice)
-                          // Get coin's decimal precision for comma formatting
-                          const pxDecimals = getCachedPxDecimals(coin.symbol)
-                          return `$${formatNumberWithCommas(numericPrice, pxDecimals)}`
-                        } catch (error) {
-                          // Get coin's decimal precision for comma formatting
-                          const pxDecimals = getCachedPxDecimals(coin.symbol)
-                          return `$${formatNumberWithCommas(coinPrice, pxDecimals)}`
-                        }
-                      })()
+                      `$${formatPriceForDisplay(coinPrice, coin.symbol)}`
                     ) : (
                       <span className="text-gray-400">Loading...</span>
                     )}
@@ -3430,7 +3463,7 @@ const handleScaleEndPriceBlur = () => {
                     const convertedSize = currentSize / coinPrice
                     
                     // Get the target coin's szDecimals for rounding
-                    const szDecimals = getCachedSzDecimals(state.selectedCoin)
+                    const szDecimals = getSzDecimals(state.selectedCoin)
                     
                     console.log(`🔄 Size conversion for ${state.selectedCoin}:`, {
                       originalSize: currentSize,
@@ -3518,12 +3551,8 @@ const handleScaleEndPriceBlur = () => {
                 onBlur={handleLimitPriceBlur}
                 onKeyDown={(e) => {
                   try {
-                    const pxDecimals = (() => {
-                      if (typeof assetPrecision.pxDecimals === 'number') {
-                        return assetPrecision.pxDecimals
-                      }
-                      return getCachedPxDecimals(state.selectedCoin || 'BTC-PERP')
-                    })()
+                    // Use new rules only (ignore cached pxDecimals)
+                    const pxDecimals = getPxDecimals(state.selectedCoin || 'BTC-PERP')
 
                     if (!Number.isFinite(pxDecimals)) {
                       return
@@ -3981,15 +4010,7 @@ const handleScaleEndPriceBlur = () => {
                   {priceError ? (
                     <span className="text-red-400 text-sm">Error</span>
                   ) : typeof topCardPrice === 'number' ? (
-                    (() => {
-                      try {
-                        const formattedPrice = formatHyperliquidPriceSync(topCardPrice, state.selectedCoin)
-                        return `$${formattedPrice}`
-                      } catch (error) {
-                        console.error('Error formatting market price:', error)
-                        return `$${topCardPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 5 })}`
-                      }
-                    })()
+                    `$${formatPriceForDisplay(topCardPrice, state.selectedCoin)}`
                   ) : priceConnected ? (
                     <span className="text-gray-400 text-sm">Loading...</span>
                   ) : (
@@ -4018,12 +4039,8 @@ const handleScaleEndPriceBlur = () => {
                     disabled={!isSizeValid()}
                     onKeyDown={(e) => {
                       try {
-                        const pxDecimals = (() => {
-                          if (typeof assetPrecision.pxDecimals === 'number') {
-                            return assetPrecision.pxDecimals
-                          }
-                          return getCachedPxDecimals(state.selectedCoin || 'BTC-PERP')
-                        })()
+                        // Use new rules only (ignore cached pxDecimals)
+                        const pxDecimals = getPxDecimals(state.selectedCoin || 'BTC-PERP')
 
                         if (!Number.isFinite(pxDecimals)) {
                           return
@@ -4106,12 +4123,8 @@ const handleScaleEndPriceBlur = () => {
                     disabled={!isSizeValid()}
                     onKeyDown={(e) => {
                       try {
-                        const pxDecimals = (() => {
-                          if (typeof assetPrecision.pxDecimals === 'number') {
-                            return assetPrecision.pxDecimals
-                          }
-                          return getCachedPxDecimals(state.selectedCoin || 'BTC-PERP')
-                        })()
+                        // Use new rules only (ignore cached pxDecimals)
+                        const pxDecimals = getPxDecimals(state.selectedCoin || 'BTC-PERP')
 
                         if (!Number.isFinite(pxDecimals)) {
                           return
@@ -4478,10 +4491,11 @@ const handleScaleEndPriceBlur = () => {
                             ? accountInfo.marginRequired
                             : 0)
 
+                    const totalEquityFallback = accountInfo.availableToTrade + (Number.isFinite(derivedTransferRequirement) ? derivedTransferRequirement : accountInfo.marginRequired || 0)
                     const accountValue =
-                      typeof accountInfo.accountValue === 'number' && Number.isFinite(accountInfo.accountValue)
+                      typeof accountInfo.accountValue === 'number' && Number.isFinite(accountInfo.accountValue) && accountInfo.accountValue > 0
                         ? accountInfo.accountValue
-                        : accountInfo.availableToTrade + (Number.isFinite(derivedTransferRequirement) ? derivedTransferRequirement : accountInfo.marginRequired || 0)
+                        : totalEquityFallback
                     const isolatedMargin = state.marginMode === 'isolated'
                       ? calculateIsolatedMarginRequirement(positionSize, entryPrice, leverage)
                       : 0
@@ -4491,7 +4505,7 @@ const handleScaleEndPriceBlur = () => {
                       maxLeverage: tier.maxLeverage
                     })).filter(tier => Number.isFinite(tier.lowerBound) && tier.maxLeverage > 0)
 
-                    const liquidationPrice = calculateLiquidationPriceFromInputs({
+                    const details = calculateLiquidationWithDetailsFromInputs({
                       entryPrice, 
                       leverage, 
                       side: state.side,
@@ -4505,12 +4519,13 @@ const handleScaleEndPriceBlur = () => {
                       marginTiers,
                       maxLeverage: leverageInfo?.maxLeverage
                     })
+                    const liquidationPrice = details.price
 
                     if (liquidationPrice < 0) {
                       return `N/A`
                     }
                     
-                return `$${formatPriceWithPrecision(liquidationPrice, state.selectedCoin)}`
+                return `$${formatLiqPriceForDisplayTick(liquidationPrice, state.selectedCoin)}`
                   } catch (error) {
                     console.error('Failed to calculate liquidation price:', error)
                   }
@@ -4522,6 +4537,62 @@ const handleScaleEndPriceBlur = () => {
             })()}
           </span>
         </div>
+        {(() => {
+          try {
+            if (!state.size || typeof topCardPrice !== 'number') return null
+            const entryPrice = state.orderType === 'limit' && state.limitPrice 
+              ? parseFloat(state.limitPrice) 
+              : topCardPrice
+            if (!(entryPrice > 0) || !(state.leverage > 0)) return null
+            const positionSize = Math.abs(getCoinSizeForApi())
+            if (!(positionSize > 0)) return null
+
+            const rawTransferRequirement = accountInfo.transferRequirement
+            const derivedTransferRequirement =
+              typeof rawTransferRequirement === 'number' && Number.isFinite(rawTransferRequirement)
+                ? rawTransferRequirement
+                : (typeof accountInfo.marginRequired === 'number' && Number.isFinite(accountInfo.marginRequired)
+                    ? accountInfo.marginRequired
+                    : 0)
+
+            const totalEquityFallback = accountInfo.availableToTrade + (Number.isFinite(derivedTransferRequirement) ? derivedTransferRequirement : accountInfo.marginRequired || 0)
+            const accountValue =
+              typeof accountInfo.accountValue === 'number' && Number.isFinite(accountInfo.accountValue) && accountInfo.accountValue > 0
+                ? accountInfo.accountValue
+                : totalEquityFallback
+
+            const marginTiers = leverageInfo?.marginTable?.marginTiers?.map(tier => ({
+              lowerBound: parseFloat(tier.lowerBound),
+              maxLeverage: tier.maxLeverage
+            })).filter(tier => Number.isFinite(tier.lowerBound) && tier.maxLeverage > 0)
+
+            const details = calculateLiquidationWithDetailsFromInputs({
+              entryPrice,
+              leverage: state.leverage,
+              side: state.side,
+              coin: state.selectedCoin,
+              marginMode: state.marginMode,
+              walletBalance: accountInfo.availableToTrade,
+              positionSize,
+              accountValue,
+              isolatedMargin: state.marginMode === 'isolated' ? calculateIsolatedMarginRequirement(positionSize, entryPrice, state.leverage) : 0,
+              transferRequirement: derivedTransferRequirement,
+              marginTiers,
+              maxLeverage: leverageInfo?.maxLeverage
+            })
+
+            const maintLeverage = details.rate > 0 ? (1 / (2 * details.rate)) : 0
+            const fmtUSD = (n: number, d = 2) => n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })
+
+            return (
+              <div className="mt-1 text-xs text-gray-400">
+                Equity used: ${fmtUSD(details.equityUsed)} · Maint tier: {maintLeverage.toFixed(0)}x (l={details.rate.toFixed(3)}) · Deduction: ${fmtUSD(details.deduction, 0)}
+              </div>
+            )
+          } catch {
+            return null
+          }
+        })()}
         <div className="flex justify-between">
           <span className="text-gray-400">Order Value:</span>
           <span className="text-white">
@@ -4651,7 +4722,7 @@ const handleScaleEndPriceBlur = () => {
                     if (pendingOrder.orderType === 'twap') {
                       // For TWAP orders, show market price
                       return typeof topCardPrice === 'number'
-                        ? `$${formatPriceWithPrecision(topCardPrice, state.selectedCoin)} (Market)`
+                        ? `$${formatPriceForDisplay(topCardPrice, state.selectedCoin)} (Market)`
                         : 'Market'
                     } else if (pendingOrder.orderType === 'scale') {
                       // For scale orders, show start and end prices
@@ -4663,7 +4734,7 @@ const handleScaleEndPriceBlur = () => {
                       if (!pendingOrder.price || pendingOrder.price === 'Market' || pendingOrder.price === '') {
                         // For market orders, show current market price if available
                         if (pendingOrder.orderType === 'market' && typeof topCardPrice === 'number') {
-                          return `$${formatPriceWithPrecision(topCardPrice, state.selectedCoin)} (Market)`
+                          return `$${formatPriceForDisplay(topCardPrice, state.selectedCoin)} (Market)`
                         }
                         // For limit orders without price, show N/A
                         if (pendingOrder.orderType === 'limit' && (!pendingOrder.price || pendingOrder.price === '')) {
@@ -4697,13 +4768,27 @@ const handleScaleEndPriceBlur = () => {
                   {pendingOrder.takeProfitPrice && (
                     <div className="flex justify-between">
                       <span className="text-gray-400">Take Profit:</span>
-                      <span className="text-green-400 font-medium">${pendingOrder.takeProfitPrice}</span>
+                      <span className="text-green-400 font-medium">{
+                        (() => {
+                          const n = parseFloat(pendingOrder.takeProfitPrice)
+                          return Number.isFinite(n)
+                            ? `$${formatPriceForDisplay(n, state.selectedCoin)}`
+                            : `$${pendingOrder.takeProfitPrice}`
+                        })()
+                      }</span>
                     </div>
                   )}
                   {pendingOrder.stopLossPrice && (
                     <div className="flex justify-between">
                       <span className="text-gray-400">Stop Loss:</span>
-                      <span className="text-red-400 font-medium">${pendingOrder.stopLossPrice}</span>
+                      <span className="text-red-400 font-medium">{
+                        (() => {
+                          const n = parseFloat(pendingOrder.stopLossPrice)
+                          return Number.isFinite(n)
+                            ? `$${formatPriceForDisplay(n, state.selectedCoin)}`
+                            : `$${pendingOrder.stopLossPrice}`
+                        })()
+                      }</span>
                     </div>
                   )}
                 </>

@@ -1,26 +1,26 @@
 #!/bin/bash
 
-# 测试 /api/asset-metadata/{coin} API端点
-# 确保服务器正在运行在 localhost:3001
+# Test /api/asset-metadata/{coin} API endpoint
+# Make sure the server is running on localhost:3001
 
 echo "🧪 测试 /api/asset-metadata/{coin} API端点"
 echo "================================================"
 
-# 测试币种列表
+# Coins to test
 COINS=("BTC-PERP" "ETH-PERP" "SOL-PERP" "DOGE-PERP" "AVAX-PERP")
 
-# 服务器地址
+# Server base URL
 BASE_URL="http://localhost:3001"
 
 echo "📡 服务器地址: $BASE_URL"
 echo ""
 
-# 测试每个币种
+# Test each coin
 for coin in "${COINS[@]}"; do
     echo "🔍 测试币种: $coin"
     echo "----------------------------------------"
     
-    # 使用curl测试API
+    # Use curl to test the API
     curl -s -w "\nHTTP状态码: %{http_code}\n响应时间: %{time_total}s\n" \
          -H "Content-Type: application/json" \
          -H "Accept: application/json" \
