@@ -2,11 +2,11 @@
 
 ## 📋 概述
 
-本文档总结了 对照 hyperliquid 官方 interface 后完成的所有功能改进和新增特性。这些改进提升了交易界面的用户体验和功能完整性。
+在对照hyperliquid官方interface后，完成了部分功能改进。这些改进提升了交易界面的用户体验和功能完整性。
 
 ## 🎯 核心功能模块
 
-### 1. 📊 数字精度系统重构
+### 1. 📊 数字精度重构
 
 **功能描述**: 完全重构了数字精度处理系统，创建了集中化的精度配置管理
 
@@ -43,9 +43,9 @@
 "1234567890123.45" ❌ 无效 (超过12位)
 ```
 
-### 3. ⚡ 动态杠杆系统
+### 3. ⚡ 动态杠杆
 
-**功能描述**: 实现了从API获取实时杠杆信息的动态杠杆管理系统
+**功能描述**: 实现了从API获取实时杠杆信息的动态杠杆管理
 
 **主要功能**:
 - 创建了 `LeverageService` 类
@@ -66,7 +66,7 @@
 "$50,000+: 8x杠杆" ✅
 ```
 
-### 4. 🔄 智能单位转换系统
+### 4. 🔄 智能单位转换
 
 **功能描述**: 实现了USD和币种单位之间的智能转换，支持实时价格计算
 
@@ -95,9 +95,9 @@
 - 改进的输入验证和错误提示
 - 更好的视觉反馈和状态管理
 
-### 6. ✅ 输入验证系统
+### 6. ✅ 输入验证
 
-**功能描述**: 实现了全面的输入验证系统，包括实时验证和错误提示
+**功能描述**: 实现了全面的输入验证，包括实时验证和错误提示
 
 **验证规则**:
 - 价格输入: 必须为正数，符合币种精度要求
@@ -129,7 +129,7 @@
 - 用户友好的错误提示
 - 改进的API错误处理
 
-### 8. 💰 清算价格计算系统
+### 8. 💰 更新清算价格计算
 
 **功能描述**: 实现了完整的清算价格计算功能，支持多种保证金模式 (refer to [computing-liquidation-price](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/liquidations#computing-liquidation-price))
 
@@ -138,9 +138,7 @@
 - 考虑杠杆和保证金要求
 - 支持多币种清算价格计算
 - 实时清算价格显示
-(目前清算价格跟交易所 UI 对不上， 问题在于：我们在整个处理流程里，目前还没有拿到每个层级对应的维持保证金比例（maintenance leverage/fraction），但是我们现在已经能拿到每个币种对应的 marginTableId，并且通过 /api/meta 接口也能获取到分层的边界数据（比如 lowerBound 和
-我们之前hardcode进去的一些常量（比如 BTC: 0.004 这种数值），其实只是刚好对应最小的那个层级。
-结果就是，当仓位的名义金额一旦跨过更高的层级，我们界面上显示的价格就会开始偏差，TODO: figure out how to fetch "maintenance leverage" from server to replace the hardcode)
+(目前清算价格跟交易所UI还对不上，问题在于：在整个处理流程里，尽管我们现在已经能拿到每个币种对应的 marginTableId，并且通过 /api/meta 接口也能获取到分层的边界数据（比如 lowerBound） 但是目前还没有拿到每个层级对应的维持保证金比例（maintenance leverage/fraction），我们只能hardcode进去的一些常量（比如 BTC: 0.004），其实只是刚好对应最小的那个层级。所以，position notional crosses a higher tier，我们界面上显示的价格就会开始偏差，Next step is to enhance the server’s leverage endpoint so it also returns the maintenance leverage per tier (the info client can provide it, we just haven’t exposed it))
 
 **测试示例**:
 ```javascript
@@ -171,7 +169,7 @@
 "Available to Trade: $50,000" ✅ (充足余额)
 ```
 
-### 10. 🔄 保证金模式切换系统
+### 10. 🔄 保证金模式切换
 
 **功能描述**: 实现了交叉保证金和逐仓保证金模式之间的切换
 
