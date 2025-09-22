@@ -772,6 +772,12 @@ const TradingInterface: React.FC = () => {
     return null
   }, [state.orderType, state.limitPrice, topCardPrice, currentPrice])
 
+  // Check if size is valid for TP/SL calculations
+  const isSizeValid = React.useCallback((): boolean => {
+    const sizeValue = parseFloat(state.size || '0')
+    return !isNaN(sizeValue) && sizeValue > 0
+  }, [state.size])
+
 const sanitizePriceInput = (
   rawValue: string,
   previousValue: string,
@@ -2021,27 +2027,94 @@ const handleTPSLChange = (field: 'takeProfitPrice' | 'stopLossPrice' | 'takeProf
 
     if (referencePrice && numericValue) {
       if (field === 'takeProfitGain') {
-        const gainFraction = parseFloat(numericValue) / 100
-        if (!isNaN(gainFraction)) {
-          const leverage = Math.max(prev.leverage ?? 1, 1)
-          const priceDelta = gainFraction / leverage
-          const adjustedPrice = referencePrice * (prev.side === 'buy' ? 1 + priceDelta : 1 - priceDelta)
-          newState.takeProfitPrice = formatPriceWithPrecision(adjustedPrice, state.selectedCoin)
+        const unit = prev.takeProfitGainUnit || '%'
+        if (unit === '%') {
+          const gainFraction = parseFloat(numericValue) / 100
+          if (!isNaN(gainFraction)) {
+            const leverage = Math.max(prev.leverage ?? 1, 1)
+            const priceDelta = gainFraction / leverage
+            const adjustedPrice = referencePrice * (prev.side === 'buy' ? 1 + priceDelta : 1 - priceDelta)
+            // Ensure price doesn't exceed 12 digits and follows precision rules
+            const formattedPrice = formatPriceWithPrecision(adjustedPrice, state.selectedCoin)
+            const digitsOnly = formattedPrice.replace(/[^0-9]/g, '')
+            if (digitsOnly.length <= 12) {
+              newState.takeProfitPrice = formattedPrice
+            }
+          }
+        } else if (unit === 'USD') {
+          // For USD, calculate percentage based on position size and reference price
+          const usdValue = parseFloat(numericValue)
+          if (!isNaN(usdValue) && usdValue !== 0) {
+            const positionSize = parseFloat(prev.size || '0')
+            if (positionSize > 0) {
+              const gainFraction = usdValue / (positionSize * referencePrice)
+              const leverage = Math.max(prev.leverage ?? 1, 1)
+              const priceDelta = gainFraction / leverage
+              const adjustedPrice = referencePrice * (prev.side === 'buy' ? 1 + priceDelta : 1 - priceDelta)
+              // Ensure price doesn't exceed 12 digits and follows precision rules
+              const formattedPrice = formatPriceWithPrecision(adjustedPrice, state.selectedCoin)
+              const digitsOnly = formattedPrice.replace(/[^0-9]/g, '')
+              if (digitsOnly.length <= 12) {
+                newState.takeProfitPrice = formattedPrice
+              }
+            }
+          }
         }
       } else if (field === 'stopLossLoss') {
-        const lossFraction = parseFloat(numericValue) / 100
-        if (!isNaN(lossFraction)) {
-          const leverage = Math.max(prev.leverage ?? 1, 1)
-          const priceDelta = lossFraction / leverage
-          const adjustedPrice = referencePrice * (prev.side === 'buy' ? 1 - priceDelta : 1 + priceDelta)
-          newState.stopLossPrice = formatPriceWithPrecision(adjustedPrice, state.selectedCoin)
+        const unit = prev.stopLossLossUnit || '%'
+        if (unit === '%') {
+          const lossFraction = parseFloat(numericValue) / 100
+          if (!isNaN(lossFraction)) {
+            const leverage = Math.max(prev.leverage ?? 1, 1)
+            const priceDelta = lossFraction / leverage
+            const adjustedPrice = referencePrice * (prev.side === 'buy' ? 1 - priceDelta : 1 + priceDelta)
+            // Ensure price doesn't exceed 12 digits and follows precision rules
+            const formattedPrice = formatPriceWithPrecision(adjustedPrice, state.selectedCoin)
+            const digitsOnly = formattedPrice.replace(/[^0-9]/g, '')
+            if (digitsOnly.length <= 12) {
+              newState.stopLossPrice = formattedPrice
+            }
+          }
+        } else if (unit === 'USD') {
+          // For USD, calculate percentage based on position size and reference price
+          const usdValue = parseFloat(numericValue)
+          if (!isNaN(usdValue) && usdValue !== 0) {
+            const positionSize = parseFloat(prev.size || '0')
+            if (positionSize > 0) {
+              const lossFraction = usdValue / (positionSize * referencePrice)
+              const leverage = Math.max(prev.leverage ?? 1, 1)
+              const priceDelta = lossFraction / leverage
+              const adjustedPrice = referencePrice * (prev.side === 'buy' ? 1 - priceDelta : 1 + priceDelta)
+              // Ensure price doesn't exceed 12 digits and follows precision rules
+              const formattedPrice = formatPriceWithPrecision(adjustedPrice, state.selectedCoin)
+              const digitsOnly = formattedPrice.replace(/[^0-9]/g, '')
+              if (digitsOnly.length <= 12) {
+                newState.stopLossPrice = formattedPrice
+              }
+            }
           }
         }
       }
+    }
       
       return newState
     })
   }
+
+const handleTPSLUnitChange = (field: 'takeProfitGainUnit' | 'stopLossLossUnit', unit: 'USD' | '%') => {
+  setState(prev => {
+    const newState = { ...prev, [field]: unit }
+    
+    // Clear the corresponding value when switching units to avoid confusion
+    if (field === 'takeProfitGainUnit') {
+      newState.takeProfitGain = ''
+    } else if (field === 'stopLossLossUnit') {
+      newState.stopLossLoss = ''
+    }
+    
+    return newState
+  })
+}
 
 const handleTakeProfitPriceChange = (value: string, inputEl?: HTMLInputElement) => {
     console.log(`🔍 TP Price Change - Input: "${value}"`)
@@ -3731,7 +3804,7 @@ const handleScaleEndPriceBlur = () => {
                     }}
                     placeholder="0"
                     className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent text-right focus:outline-none focus:border-teal-primary placeholder-transparent"
-                    style={{ color: 'transparent', caretColor: '#ffffff' }}
+                    style={{ color: 'transparent', caretColor: '#ffffff', textAlign: 'right' }}
                   />
                   <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
                     <span className="text-gray-400 text-sm">Hour(s)</span>
@@ -3753,7 +3826,7 @@ const handleScaleEndPriceBlur = () => {
                     }}
                     placeholder="0"
                     className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent text-right focus:outline-none focus:border-teal-primary placeholder-transparent"
-                    style={{ color: 'transparent', caretColor: '#ffffff' }}
+                    style={{ color: 'transparent', caretColor: '#ffffff', textAlign: 'right' }}
                   />
                   <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
                     <span className="text-gray-400 text-sm">Minute(s)</span>
@@ -3942,6 +4015,7 @@ const handleScaleEndPriceBlur = () => {
                     value={state.takeProfitPrice}
                     onChange={(e) => handleTakeProfitPriceChange(e.target.value, e.currentTarget)}
                     onBlur={handleTakeProfitPriceBlur}
+                    disabled={!isSizeValid()}
                     onKeyDown={(e) => {
                       try {
                         const pxDecimals = (() => {
@@ -3978,8 +4052,8 @@ const handleScaleEndPriceBlur = () => {
                       }
                     }}
                     placeholder="0"
-                    className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent text-right focus:outline-none focus:border-teal-primary placeholder-transparent"
-                    style={{ color: 'transparent', caretColor: '#ffffff' }}
+                    className={`w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent text-right focus:outline-none focus:border-teal-primary placeholder-transparent ${!isSizeValid() ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    style={{ color: 'transparent', caretColor: '#ffffff', textAlign: 'right' }}
                   />
                   <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
                     <span className="text-gray-400 text-sm">TP Price</span>
@@ -3994,12 +4068,27 @@ const handleScaleEndPriceBlur = () => {
                     value={state.takeProfitGain}
                     onChange={(e) => handleTPSLChange('takeProfitGain', e.target.value, e.currentTarget)}
                     placeholder="0"
-                    className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent text-right focus:outline-none focus:border-teal-primary placeholder-transparent"
-                    style={{ color: 'transparent', caretColor: '#ffffff' }}
+                    disabled={!isSizeValid()}
+                    className={`w-full py-2 bg-dark-border border border-gray-600 rounded text-white focus:outline-none focus:border-teal-primary ${!isSizeValid() ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    style={{ 
+                      textAlign: 'right',
+                      paddingLeft: '50px', // Reserve space for "Gain" label
+                      paddingRight: '70px' // Reserve space for dropdown
+                    }}
                   />
-                  <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
+                  <div className="absolute left-0 top-0 bottom-0 flex items-center px-3 pointer-events-none">
                     <span className="text-gray-400 text-sm">Gain</span>
-                    <span className="text-white font-medium">{state.takeProfitGain || '0'}%</span>
+                  </div>
+                  <div className="absolute right-0 top-0 bottom-0 flex items-center pr-3 pointer-events-auto">
+                    <select
+                      value={state.takeProfitGainUnit}
+                      onChange={(e) => handleTPSLUnitChange('takeProfitGainUnit', e.target.value as 'USD' | '%')}
+                      disabled={!isSizeValid()}
+                      className="bg-transparent border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-teal-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <option value="%">%</option>
+                      <option value="USD" disabled>$</option>
+                    </select>
                   </div>
                 </div>
               </div>
@@ -4014,6 +4103,7 @@ const handleScaleEndPriceBlur = () => {
                     value={state.stopLossPrice}
                     onChange={(e) => handleStopLossPriceChange(e.target.value, e.currentTarget)}
                     onBlur={handleStopLossPriceBlur}
+                    disabled={!isSizeValid()}
                     onKeyDown={(e) => {
                       try {
                         const pxDecimals = (() => {
@@ -4050,8 +4140,8 @@ const handleScaleEndPriceBlur = () => {
                       }
                     }}
                     placeholder="0"
-                    className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent focus:outline-none focus:border-teal-primary placeholder-transparent"
-                    style={{ color: 'transparent' }}
+                    className={`w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent focus:outline-none focus:border-teal-primary placeholder-transparent ${!isSizeValid() ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    style={{ color: 'transparent', caretColor: '#ffffff', textAlign: 'right' }}
                   />
                   <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
                     <span className="text-gray-400 text-sm">SL Price</span>
@@ -4066,12 +4156,27 @@ const handleScaleEndPriceBlur = () => {
                     value={state.stopLossLoss}
                     onChange={(e) => handleTPSLChange('stopLossLoss', e.target.value, e.currentTarget)}
                     placeholder="0"
-                    className="w-full px-3 py-2 bg-dark-border border border-gray-600 rounded text-transparent focus:outline-none focus:border-teal-primary placeholder-transparent"
-                    style={{ color: 'transparent' }}
+                    disabled={!isSizeValid()}
+                    className={`w-full py-2 bg-dark-border border border-gray-600 rounded text-white focus:outline-none focus:border-teal-primary ${!isSizeValid() ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    style={{ 
+                      textAlign: 'right',
+                      paddingLeft: '50px', // Reserve space for "Loss" label
+                      paddingRight: '70px' // Reserve space for dropdown
+                    }}
                   />
-                  <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
+                  <div className="absolute left-0 top-0 bottom-0 flex items-center px-3 pointer-events-none">
                     <span className="text-gray-400 text-sm">Loss</span>
-                    <span className="text-white font-medium">{state.stopLossLoss || '0'}%</span>
+                  </div>
+                  <div className="absolute right-0 top-0 bottom-0 flex items-center pr-3 pointer-events-auto">
+                    <select
+                      value={state.stopLossLossUnit}
+                      onChange={(e) => handleTPSLUnitChange('stopLossLossUnit', e.target.value as 'USD' | '%')}
+                      disabled={!isSizeValid()}
+                      className="bg-transparent rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-teal-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <option value="%">%</option>
+                      <option value="USD" disabled>$</option>
+                    </select>
                   </div>
                 </div>
               </div>

@@ -23,6 +23,8 @@ export interface TradingState {
   takeProfitPrice: string
   takeProfitGain: string
   stopLossLoss: string
+  takeProfitGainUnit: 'USD' | '%'
+  stopLossLossUnit: 'USD' | '%'
   // Scale order specific fields
   scaleStartPrice: string
   scaleEndPrice: string
@@ -165,6 +167,8 @@ export const useTrading = () => {
     takeProfitPrice: '',
     takeProfitGain: '',
     stopLossLoss: '',
+    takeProfitGainUnit: '%',
+    stopLossLossUnit: '%',
     // Scale order defaults
     scaleStartPrice: '',
     scaleEndPrice: '',
@@ -340,6 +344,26 @@ export const useTrading = () => {
       }
       if (state.stopLossLoss && isNaN(parseFloat(state.stopLossLoss))) {
         errors.push('Stop loss must be a valid number')
+      }
+      
+      // Validate USD units
+      if (state.takeProfitGain && state.takeProfitGainUnit === 'USD') {
+        const usdValue = parseFloat(state.takeProfitGain)
+        if (usdValue <= 0) {
+          errors.push('Take profit gain in USD must be greater than 0')
+        }
+        if (usdValue > 1000000) {
+          errors.push('Take profit gain in USD cannot exceed $1,000,000')
+        }
+      }
+      if (state.stopLossLoss && state.stopLossLossUnit === 'USD') {
+        const usdValue = parseFloat(state.stopLossLoss)
+        if (usdValue <= 0) {
+          errors.push('Stop loss in USD must be greater than 0')
+        }
+        if (usdValue > 1000000) {
+          errors.push('Stop loss in USD cannot exceed $1,000,000')
+        }
       }
     }
 

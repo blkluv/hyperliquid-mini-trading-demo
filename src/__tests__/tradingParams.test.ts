@@ -19,6 +19,8 @@ interface TradingState {
   takeProfitPrice: string
   takeProfitGain: string
   stopLossLoss: string
+  takeProfitGainUnit: 'USD' | '%'
+  stopLossLossUnit: 'USD' | '%'
   // Scale order specific fields
   scaleStartPrice: string
   scaleEndPrice: string
@@ -235,6 +237,8 @@ describe('Trading Parameters Collection and Validation', () => {
       takeProfitPrice: '',
       takeProfitGain: '10',
       stopLossLoss: '10',
+      takeProfitGainUnit: '%',
+      stopLossLossUnit: '%',
       scaleStartPrice: '',
       scaleEndPrice: '',
       scaleOrderCount: '5',
