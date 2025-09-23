@@ -4591,7 +4591,7 @@ const handleScaleEndPriceBlur = () => {
           </span>
         </div>
         {/* Real-time Initial Margin based on live mark price */}
-        <div className="flex justify-between">
+        {/* <div className="flex justify-between">
           <span className="text-teal-400">Live Initial Margin:</span>
           <span className="text-teal-300">
             {(() => {
@@ -4626,7 +4626,7 @@ const handleScaleEndPriceBlur = () => {
               return 'N/A'
             })()}
           </span>
-        </div>
+        </div> */}
         {/* <div className="flex justify-between">
           <span className="text-gray-400">Slippage:</span>
           <span className="text-white">
