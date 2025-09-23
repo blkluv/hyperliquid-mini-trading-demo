@@ -8,6 +8,7 @@ import { CONFIG } from '../config/config'
 import { TradingConfigHelper } from '../config/tradingConfig'
 import { hyperliquidService } from '../services/hyperliquidService'
 import { validateHyperliquidPrice, validateHyperliquidSizeSync, formatHyperliquidPriceSync, formatHyperliquidSizeSync, getHyperliquidSizeValidationError, validateHyperliquidPriceSync, HyperliquidPrecision } from '../utils/hyperliquidPrecision'
+import { COIN_PRECISION_CONFIG } from '../config/hyperliquidPrecisionConfig'
 import { calculateIsolatedMarginRequirement, calculateLiquidationPriceFromInputs, calculateLiquidationWithDetailsFromInputs } from '../utils/liquidationPrice'
 import { leverageService, LeverageInfo } from '../services/leverageService'
 
@@ -276,22 +277,45 @@ const TradingInterface: React.FC = () => {
     }
   }, [formatPriceForTickSize, getPxDecimals])
 
-  // Strict tick-based rounding (ceil) for displaying Liquidation Price only
+  // Format liquidation price to match current price decimal formatting
   const formatLiqPriceForDisplayTick = React.useCallback((price: number, coin: string): string => {
     try {
-      const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin)
-      const pxDecimals = typeof assetInfo.pxDecimals === 'number' ? assetInfo.pxDecimals : 0
-      const multiplier = Math.pow(10, pxDecimals)
-      const rounded = Math.ceil(price * multiplier) / multiplier
-      return rounded.toLocaleString('en-US', {
-        minimumFractionDigits: pxDecimals,
-        maximumFractionDigits: pxDecimals,
+      // Use the same formatting logic as current price to ensure consistency
+      let formatted = formatHyperliquidPriceSync(price, coin)
+      const isEth = (coin || '').toUpperCase().startsWith('ETH')
+
+      // Apply the same decimal trimming logic as current price
+      if (formatted.includes('.')) {
+        if (/\.0+$/.test(formatted)) {
+          // e.g., 4182.00 -> 4182.0 for ETH, or -> 4182 for others
+          formatted = isEth ? formatted.replace(/\.0+$/, '.0') : formatted.replace(/\.0+$/, '')
+        } else {
+          formatted = formatted.replace(/(\.\d*?[1-9])0+$/, '$1') // 4165.10 -> 4165.1, 0.1200 -> 0.12
+        }
+        if (!isEth) {
+          formatted = formatted.replace(/\.$/, '') // remove dangling dot for non-ETH
+        }
+      } else if (isEth) {
+        // Ensure at least one decimal for ETH when integer
+        formatted = `${formatted}.0`
+      }
+
+      const decimalIndex = formatted.indexOf('.')
+      const decimals = decimalIndex === -1 ? 0 : (formatted.length - decimalIndex - 1)
+      const numeric = parseFloat(formatted)
+      return numeric.toLocaleString('en-US', {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals
       })
     } catch (error) {
-      const rounded = Math.ceil(price)
-      return rounded.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+      // Fallback: use computed px decimals under new rules
+      const decimals = getPxDecimals(coin)
+      return price.toLocaleString('en-US', {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals
+      })
     }
-  }, [])
+  }, [getPxDecimals])
 
   // Format a price for UI: apply Hyperliquid rules first, then add thousands separators
   const formatPriceForDisplay = React.useCallback((price: number, coin: string): string => {
@@ -1077,8 +1101,18 @@ const sanitizePriceInput = (
               }
             })
 
+            // Filter coins that exist in COIN_PRECISION_CONFIG
+            const coinsInConfig = normalizedCoins.filter(coin => {
+              const coinSymbol = coin.symbol.toUpperCase()
+              const hasConfig = COIN_PRECISION_CONFIG[coinSymbol] !== undefined
+              if (!hasConfig) {
+                console.log(`⚠️ Skipping ${coinSymbol} - not in COIN_PRECISION_CONFIG`)
+              }
+              return hasConfig
+            })
+
             // Sort by 24h notional volume (desc) and keep top 6
-            const sorted = [...normalizedCoins].sort((a, b) => {
+            const sorted = [...coinsInConfig].sort((a, b) => {
               const aVol = (typeof a.dayNotionalVolume === 'number' ? a.dayNotionalVolume : 0)
               const bVol = (typeof b.dayNotionalVolume === 'number' ? b.dayNotionalVolume : 0)
               if (bVol !== aVol) return bVol - aVol
@@ -1087,42 +1121,61 @@ const sanitizePriceInput = (
               const bAlt = (b.dayBaseVolume ?? 0) * (b.markPrice ?? b.midPrice ?? 0)
               return bAlt - aAlt
             })
-            const top6 = sorted.slice(0, 6)
+            const top6 = sorted.slice(0, 10)
 
             HyperliquidPrecision.primeCacheFromCoins(top6)
             setTopCoins(top6)
-            console.log('📊 Top 6 coins from API (sorted by volume):', top6)
+            console.log('📊 Top 10 coins from API (sorted by volume, filtered by COIN_PRECISION_CONFIG):', top6)
+            console.log(`📈 Filtered ${normalizedCoins.length} coins down to ${coinsInConfig.length} with precision config, showing top 6`)
           } else {
             console.error('❌ Top coins response missing coins array')
           }
         } else {
           console.error('❌ Failed to fetch top coins:', response.status)
-          const fallbackCoinsAll = CONFIG.AVAILABLE_COINS.map(coin => {
-            const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin.symbol)
-            return {
-            symbol: coin.symbol,
-            name: coin.name,
-              maxLeverage: 10,
-              szDecimals: assetInfo.szDecimals,
-              pxDecimals: assetInfo.pxDecimals
-            }
-          })
+          const fallbackCoinsAll = CONFIG.AVAILABLE_COINS
+            .filter(coin => {
+              const coinSymbol = coin.symbol.toUpperCase()
+              const hasConfig = COIN_PRECISION_CONFIG[coinSymbol] !== undefined
+              if (!hasConfig) {
+                console.log(`⚠️ Skipping fallback ${coinSymbol} - not in COIN_PRECISION_CONFIG`)
+              }
+              return hasConfig
+            })
+            .map(coin => {
+              const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin.symbol)
+              return {
+                symbol: coin.symbol,
+                name: coin.name,
+                maxLeverage: 10,
+                szDecimals: assetInfo.szDecimals,
+                pxDecimals: assetInfo.pxDecimals
+              }
+            })
           const fallbackTop6 = fallbackCoinsAll.slice(0, 6)
           HyperliquidPrecision.primeCacheFromCoins(fallbackTop6)
           setTopCoins(fallbackTop6)
         }
       } catch (error) {
         console.error('❌ Error fetching top coins:', error)
-        const fallbackCoinsAll = CONFIG.AVAILABLE_COINS.map(coin => {
-          const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin.symbol)
-          return {
-          symbol: coin.symbol,
-          name: coin.name,
-            maxLeverage: 10,
-            szDecimals: assetInfo.szDecimals,
-            pxDecimals: assetInfo.pxDecimals
-          }
-        })
+        const fallbackCoinsAll = CONFIG.AVAILABLE_COINS
+          .filter(coin => {
+            const coinSymbol = coin.symbol.toUpperCase()
+            const hasConfig = COIN_PRECISION_CONFIG[coinSymbol] !== undefined
+            if (!hasConfig) {
+              console.log(`⚠️ Skipping error fallback ${coinSymbol} - not in COIN_PRECISION_CONFIG`)
+            }
+            return hasConfig
+          })
+          .map(coin => {
+            const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin.symbol)
+            return {
+              symbol: coin.symbol,
+              name: coin.name,
+              maxLeverage: 10,
+              szDecimals: assetInfo.szDecimals,
+              pxDecimals: assetInfo.pxDecimals
+            }
+          })
         const fallbackTop6 = fallbackCoinsAll.slice(0, 6)
         HyperliquidPrecision.primeCacheFromCoins(fallbackTop6)
         setTopCoins(fallbackTop6)
@@ -2460,8 +2513,10 @@ const handleScaleEndPriceBlur = () => {
                 typeof accountInfo.accountValue === 'number' && Number.isFinite(accountInfo.accountValue) && accountInfo.accountValue > 0
                   ? accountInfo.accountValue
                   : totalEquityFallback
+              // Use live mark price for initial margin calculation: Initial Margin = position_size * mark_price / leverage
+              const markPriceForMargin = typeof topCardPrice === 'number' && topCardPrice > 0 ? topCardPrice : entryPrice
               const isolatedMargin = state.marginMode === 'isolated'
-                ? calculateIsolatedMarginRequirement(positionSize, entryPrice, state.leverage)
+                ? calculateIsolatedMarginRequirement(positionSize, markPriceForMargin, state.leverage)
                 : 0
 
               const marginTiers = leverageInfo?.marginTable?.marginTiers?.map(tier => ({
@@ -2486,8 +2541,22 @@ const handleScaleEndPriceBlur = () => {
                 })
               }
 
+              // Use live mark price for liquidation calculation
+              const liquidationEntryPrice = typeof topCardPrice === 'number' && topCardPrice > 0 ? topCardPrice : entryPrice
+              
+              // Debug: Log price changes for liquidation calculation
+              if ((window as any).__LIQ_DEBUG === true) {
+                console.log('[LIQ DEBUG][PRICE CHANGE]', {
+                  topCardPrice,
+                  entryPrice,
+                  liquidationEntryPrice,
+                  isolatedMargin,
+                  positionSize
+                })
+              }
+              
               const details = calculateLiquidationWithDetailsFromInputs({
-                entryPrice,
+                entryPrice: liquidationEntryPrice,
                 leverage: state.leverage,
                 side: state.side,
                 coin: state.selectedCoin,
@@ -4412,8 +4481,10 @@ const handleScaleEndPriceBlur = () => {
                       typeof accountInfo.accountValue === 'number' && Number.isFinite(accountInfo.accountValue) && accountInfo.accountValue > 0
                         ? accountInfo.accountValue
                         : totalEquityFallback
+                    // Use live mark price for initial margin calculation: Initial Margin = position_size * mark_price / leverage
+                    const markPriceForMargin = typeof topCardPrice === 'number' && topCardPrice > 0 ? topCardPrice : entryPrice
                     const isolatedMargin = state.marginMode === 'isolated'
-                      ? calculateIsolatedMarginRequirement(positionSize, entryPrice, leverage)
+                      ? calculateIsolatedMarginRequirement(positionSize, markPriceForMargin, leverage)
                       : 0
 
                     const marginTiers = leverageInfo?.marginTable?.marginTiers?.map(tier => ({
@@ -4421,8 +4492,10 @@ const handleScaleEndPriceBlur = () => {
                       maxLeverage: tier.maxLeverage
                     })).filter(tier => Number.isFinite(tier.lowerBound) && tier.maxLeverage > 0)
 
+                    // Use live mark price for liquidation calculation
+                    const liquidationEntryPrice = typeof topCardPrice === 'number' && topCardPrice > 0 ? topCardPrice : entryPrice
                     const details = calculateLiquidationWithDetailsFromInputs({
-                      entryPrice, 
+                      entryPrice: liquidationEntryPrice, 
                       leverage, 
                       side: state.side,
                       coin: state.selectedCoin,
@@ -4497,21 +4570,58 @@ const handleScaleEndPriceBlur = () => {
                   return 'N/A'
                 }
 
+                // Use live mark price for margin calculation: Initial Margin = position_size * mark_price / leverage
                 const limitPrice = state.orderType === 'limit' ? parseFloat(state.limitPrice || '0') : NaN
-                const fallbackPrice = typeof currentPrice === 'number' && currentPrice > 0
-                  ? currentPrice
-                  : (typeof topCardPrice === 'number' && topCardPrice > 0 ? topCardPrice : 0)
+                // Prioritize live mark price (topCardPrice) for margin calculation
+                const markPriceForMargin = typeof topCardPrice === 'number' && topCardPrice > 0 ? topCardPrice : currentPrice
                 const priceForValue = state.orderType === 'limit' && !isNaN(limitPrice) && limitPrice > 0
                   ? limitPrice
-                  : fallbackPrice
+                  : markPriceForMargin
 
-                if (priceForValue <= 0) {
+                if (!priceForValue || priceForValue <= 0) {
                   return 'N/A'
                 }
 
                 const value = sizeValue * priceForValue
                 const margin = value / state.leverage
                 return `$${formatNumberWithCommas(margin)}`
+              }
+              return 'N/A'
+            })()}
+          </span>
+        </div>
+        {/* Real-time Initial Margin based on live mark price */}
+        <div className="flex justify-between">
+          <span className="text-teal-400">Live Initial Margin:</span>
+          <span className="text-teal-300">
+            {(() => {
+              if (state.size && state.leverage > 0) {
+                let positionSize = 0
+                let markPrice = 0
+                
+                if (state.sizeUnit === 'USD') {
+                  // For USD size, convert to coin size using live mark price
+                  const usdSize = parseFloat(state.size)
+                  if (typeof topCardPrice === 'number' && topCardPrice > 0) {
+                    positionSize = usdSize / topCardPrice
+                    markPrice = topCardPrice
+                  } else if (typeof currentPrice === 'number' && currentPrice > 0) {
+                    positionSize = usdSize / currentPrice
+                    markPrice = currentPrice
+                  }
+                } else if (state.sizeUnit === state.selectedCoin) {
+                  // For coin size, use directly
+                  positionSize = parseFloat(state.size)
+                  markPrice = typeof topCardPrice === 'number' && topCardPrice > 0 
+                    ? topCardPrice 
+                    : (typeof currentPrice === 'number' && currentPrice > 0 ? currentPrice : 0)
+                }
+                
+                if (positionSize > 0 && markPrice > 0) {
+                  // Initial Margin = position_size * mark_price / leverage
+                  const initialMargin = (positionSize * markPrice) / state.leverage
+                  return `$${formatNumberWithCommas(initialMargin)}`
+                }
               }
               return 'N/A'
             })()}

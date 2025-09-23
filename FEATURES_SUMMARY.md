@@ -364,15 +364,69 @@ Price decimals and tick alignment
 - For each asset, we set `price = markPx ?? midPx ?? oraclePx` and also include all three in the payload.
 - Previously, the stream used only mid prices from `allMids`; this change aligns displayed prices closer to the official app (which uses mark), reducing downstream discrepancies in UI displays and calculations.
 
+### 19. 💰 实时初始保证金和清算价格更新
+
+**功能描述**: 实现了基于实时标记价格的初始保证金和清算价格计算，确保交易参数随市场价格实时更新
+
+**主要变更**:
+
+#### 19.1 实时初始保证金计算
+- **公式**: `Initial Margin = position_size * mark_price / leverage`
+- **价格优先级**: 优先使用实时标记价格 (`topCardPrice`)，备选当前价格 (`currentPrice`)
+- **实时更新**: 当标记价格变化时，初始保证金自动重新计算
+
+#### 19.2 清算价格实时更新
+- **价格传递**: 清算价格计算使用实时标记价格作为 `entryPrice`
+- **保证金同步**: 使用基于实时标记价格计算的初始保证金
+- **UI更新**: 清算价格随标记价格变化实时更新
+
+#### 19.3 用户界面增强
+- **Live Initial Margin显示**: 新增青色高亮的实时初始保证金显示
+- **调试支持**: 添加 `__LIQ_DEBUG` 调试模式，可在控制台查看价格变化
+- **价格优先级**: 统一使用实时标记价格进行所有保证金相关计算
+
+**技术实现**:
+```typescript
+// 实时初始保证金计算
+const markPriceForMargin = typeof topCardPrice === 'number' && topCardPrice > 0 ? topCardPrice : entryPrice
+const isolatedMargin = calculateIsolatedMarginRequirement(positionSize, markPriceForMargin, leverage)
+
+// 清算价格使用实时标记价格
+const liquidationEntryPrice = typeof topCardPrice === 'number' && topCardPrice > 0 ? topCardPrice : entryPrice
+const details = calculateLiquidationWithDetailsFromInputs({
+  entryPrice: liquidationEntryPrice,
+  isolatedMargin, // 使用实时计算的初始保证金
+  // ... 其他参数
+})
+```
+
+**数据流**:
+```
+实时标记价格 (topCardPrice) 
+    ↓
+初始保证金计算 (使用实时标记价格)
+    ↓
+清算价格计算 (使用实时标记价格)
+    ↓
+UI实时更新 (初始保证金 + 清算价格)
+```
+
+**测试方法**:
+1. 在浏览器控制台运行: `window.__LIQ_DEBUG = true`
+2. 观察价格变化时的控制台输出
+3. 验证初始保证金和清算价格是否同步更新
+
 
 
 ## 🚀 下一步计划
 
 1. 添加更多币种支持
 2. 添加更多order type 支持
-2. 优化移动端体验
-3. 增加更多订单类型
-4. 提升性能优化
-5. 增加更多风险控制功能
-6. Rich api response via using official python SDK
-7. ADD USD as unit impl for Take Profit / Stop Loss
+3. 优化移动端体验
+4. 增加更多订单类型
+5. 提升性能优化
+6. 增加更多风险控制功能
+7. Rich api response via using official python SDK
+8. ADD USD as unit impl for Take Profit / Stop Loss
+9. 优化实时价格更新性能
+10. 添加更多保证金计算模式支持
