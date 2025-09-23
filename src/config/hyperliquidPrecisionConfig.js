@@ -28,10 +28,8 @@ export const COIN_PRECISION_CONFIG = {
   'CRV-PERP': { szDecimals: 2, pxDecimals: 4, isPerp: true },
   'KAITO-PERP': { szDecimals: 2, pxDecimals: 4, isPerp: true },
   'ASTER-PERP': { szDecimals: 2, pxDecimals: 4, isPerp: true },
-  'ACE-PERP': { szDecimals: 2, pxDecimals: 4, isPerp: true },
   'BNB-PERP': { szDecimals: 3, pxDecimals: 1, isPerp: true },
   'ATOM-PERP': { szDecimals: 2, pxDecimals: 4, isPerp: true },
-  'PENGU-PERP': { szDecimals: 0, pxDecimals: 6, isPerp: true },
   'ANIME-PERP': { szDecimals: 0, pxDecimals: 6, isPerp: true },
   'PUMP-PERP': { szDecimals: 0, pxDecimals: 6, isPerp: true },
 

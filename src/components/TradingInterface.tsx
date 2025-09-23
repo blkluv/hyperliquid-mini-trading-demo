@@ -1121,10 +1121,10 @@ const sanitizePriceInput = (
               const bAlt = (b.dayBaseVolume ?? 0) * (b.markPrice ?? b.midPrice ?? 0)
               return bAlt - aAlt
             })
-            const top6 = sorted.slice(0, 10)
+            const top10 = sorted.slice(0, 10)
 
-            HyperliquidPrecision.primeCacheFromCoins(top6)
-            setTopCoins(top6)
+            // HyperliquidPrecision.primeCacheFromCoins(top10)
+            setTopCoins(top10)
             console.log('📊 Top 10 coins from API (sorted by volume, filtered by COIN_PRECISION_CONFIG):', top6)
             console.log(`📈 Filtered ${normalizedCoins.length} coins down to ${coinsInConfig.length} with precision config, showing top 6`)
           } else {

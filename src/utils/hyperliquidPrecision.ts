@@ -60,22 +60,22 @@ export class HyperliquidPrecision {
   }
 
   // Rule 2: Compute maximum allowed decimal places
-  static getMaxPriceDecimals(szDecimals: number, isPerp: boolean): number {
+  static getMaxPriceDecimals(pxDecimals: number, isPerp: boolean): number {
     const MAX_DECIMALS = isPerp ? 6 : 8 // perp=6, spot=8
-    return Math.max(0, MAX_DECIMALS - szDecimals)
+    return Math.max(0, MAX_DECIMALS - pxDecimals)
   }
 
   // Rule 3: Validate price decimal places
-  static validatePriceDecimals(price: number, szDecimals: number, isPerp: boolean): boolean {
-    const maxDecimals = this.getMaxPriceDecimals(szDecimals, isPerp)
+  static validatePriceDecimals(price: number, pxDecimals: number, isPerp: boolean): boolean {
+    const maxDecimals = this.getMaxPriceDecimals(pxDecimals, isPerp)
     const decimalPlaces = this.getDecimalPlaces(price)
     return decimalPlaces <= maxDecimals
   }
 
   // Rule 4: Combined validation
-  static validatePriceWithRules(price: number, szDecimals: number, isPerp: boolean): boolean {
+  static validatePriceWithRules(price: number, pxDecimals: number, isPerp: boolean): boolean {
     return this.validatePriceSignificantFigures(price) && 
-           this.validatePriceDecimals(price, szDecimals, isPerp)
+           this.validatePriceDecimals(price, pxDecimals, isPerp)
   }
 
   // Get number of significant digits
@@ -95,8 +95,9 @@ export class HyperliquidPrecision {
   }
 
   // Format price, enforcing all rules
-  static formatPriceWithRules(price: number, szDecimals: number, isPerp: boolean): string {
-    const maxDecimals = this.getMaxPriceDecimals(szDecimals, isPerp)
+  static formatPriceWithRules(price: number, pxDecimals: number, isPerp: boolean): string {
+    // pxDecimals directly represents the number of decimal places for price formatting
+    const maxDecimals = pxDecimals
     let adjustedPrice = price
     
     // Always apply Rule 1: limit to 5 significant digits (integer exception)
@@ -105,7 +106,7 @@ export class HyperliquidPrecision {
     }
     
     // Apply Rule 2: limit decimal places
-    if (!this.validatePriceDecimals(adjustedPrice, szDecimals, isPerp)) {
+    if (!this.validatePriceDecimals(adjustedPrice, pxDecimals, isPerp)) {
       adjustedPrice = this.truncateToDecimals(adjustedPrice, maxDecimals)
     }
     
@@ -173,8 +174,8 @@ export class HyperliquidPrecision {
       return '0'
     }
     
-    // Use the new rules to format
-    return this.formatPriceWithRules(price, assetInfo.szDecimals, assetInfo.isPerp)
+    // Use pxDecimals for price formatting, not szDecimals
+    return this.formatPriceWithRules(price, assetInfo.pxDecimals, assetInfo.isPerp)
   }
 
   /**
@@ -263,9 +264,9 @@ export class HyperliquidPrecision {
    * Format a number to a fixed number of decimal places
    */
   private static formatWithDecimals(num: number, decimals: number): string {
-    // Use Math.ceil to match Hyperliquid's rounding behavior (round up)
+    // Use standard rounding for price formatting
     const multiplier = Math.pow(10, decimals)
-    const rounded = Math.ceil(num * multiplier) / multiplier
+    const rounded = Math.round(num * multiplier) / multiplier
     return rounded.toFixed(decimals)
   }
 
@@ -401,7 +402,7 @@ export class HyperliquidPrecision {
     try {
       const metadata = await this.getAssetMetadata(coin)
       if (metadata && typeof metadata.szDecimals === 'number') {
-        const max = this.getMaxPriceDecimals(metadata.szDecimals, !!metadata.isPerp)
+        const max = this.getMaxPriceDecimals(metadata.pxDecimals, !!metadata.isPerp)
         console.log(`✅ Using rule-based pxDecimals for ${coin}: ${max}`)
         return max
       }
@@ -411,7 +412,7 @@ export class HyperliquidPrecision {
 
     // Fallback to config szDecimals + isPerp and compute
     const fallback = getCoinPrecision(coin)
-    const max = this.getMaxPriceDecimals(fallback.szDecimals, !!fallback.isPerp)
+    const max = this.getMaxPriceDecimals(fallback.pxDecimals, !!fallback.isPerp)
     console.log(`🔧 Fallback rule-based pxDecimals for ${coin}: ${max}`)
     return max
   }
@@ -533,5 +534,5 @@ export function getSzDecimalsSync(coin: string): number {
  */
 export function getPxDecimalsSync(coin: string): number {
   const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin)
-  return HyperliquidPrecision.getMaxPriceDecimals(assetInfo.szDecimals, assetInfo.isPerp)
+  return HyperliquidPrecision.getMaxPriceDecimals(assetInfo.pxDecimals, assetInfo.isPerp)
 }
