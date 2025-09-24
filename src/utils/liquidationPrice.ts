@@ -54,7 +54,22 @@ const MAINTENANCE_MARGIN_FRACTIONS: Record<string, number> = {
   // This matches observed HL UI liquidation behavior with tiered schedules.
   BTC: 1 / (2 * 40), // 0.0125
   ETH: 1 / (2 * 25), // 0.02
-  SOL: 1 / (2 * 20), // 0.025
+  SOL: 1 / (2 * 10), // 0.02
+  JUP: 1 / (2 * 50), 
+  PENGU: 1 / (2 * 5),
+  XRP: 1 / (2 * 20),
+  DOGE: 1 / (2 * 10),
+  ADA: 1 / (2 * 10),
+  UNI: 1 / (2 * 10),
+  NEAR: 1 / (2 * 10),
+  TIA: 1 / (2 * 10),
+  APT: 1 / (2 * 10),
+  BCH: 1 / (2 * 10),
+  HYPE: 1 / (2 * 10),
+  FARTCOIN: 1 / (2 * 10),
+  OP: 1 / (2 * 10),
+  ARB: 1 / (2 * 10),
+  ZETA: 1 / (2 * 10),
 }
 
 const DEFAULT_MAINTENANCE_MARGIN_FRACTION = 1 / (2 * 10) // Assume 10x max leverage when data unavailable
@@ -154,6 +169,401 @@ const selectMaintenanceParameters = (
 export const getMaintenanceMarginFraction = (coin: string): number => {
   const normalized = coin?.toUpperCase().replace(/-PERP$/, '') || ''
   return MAINTENANCE_MARGIN_FRACTIONS[normalized] ?? DEFAULT_MAINTENANCE_MARGIN_FRACTION
+}
+
+/**
+ * Calculate maintenance leverage based on notional position value and margin tiers
+ * Maintenance leverage = 2 * maxLeverage for the applicable tier
+ * @param notional - Notional position value (positionSize * price)
+ * @param marginTiers - Array of margin tiers with lowerBound and maxLeverage
+ * @param fallbackMaxLeverage - Fallback max leverage if no tiers provided
+ * @returns Maintenance leverage value
+ */
+export const calculateMaintenanceLeverage = (
+  notional: number,
+  marginTiers?: Array<{ lowerBound: number | string; maxLeverage: number }>,
+  fallbackMaxLeverage?: number
+): number => {
+  if (!isFiniteNumber(notional) || notional < 0) {
+    return fallbackMaxLeverage ? 2 * fallbackMaxLeverage : 20 // Default to 20x maintenance leverage
+  }
+
+  const normalizedTiers = normalizeMarginTiers(marginTiers)
+  
+  if (normalizedTiers.length === 0) {
+    return fallbackMaxLeverage ? 2 * fallbackMaxLeverage : 20
+  }
+
+  // Find the appropriate tier based on notional value
+  const sortedTiers = [...normalizedTiers].sort((a, b) => a.lowerBound - b.lowerBound)
+  let selectedTier = sortedTiers[0]
+
+  for (const tier of sortedTiers) {
+    if (notional >= tier.lowerBound) {
+      selectedTier = tier
+    } else {
+      break
+    }
+  }
+
+  // Maintenance leverage = 2 * maxLeverage
+  return 2 * selectedTier.maxLeverage
+}
+
+/**
+ * Get maintenance leverage for a specific coin with fallback values
+ * @param coin - Coin symbol
+ * @param notional - Notional position value
+ * @param marginTiers - Optional margin tiers
+ * @param isTestnet - Whether to use testnet tiers (default: true)
+ * @returns Maintenance leverage value
+ */
+export const getMaintenanceLeverageForCoin = (
+  coin: string,
+  notional: number,
+  marginTiers?: Array<{ lowerBound: number | string; maxLeverage: number }>,
+  isTestnet: boolean = true
+): number => {
+  const normalized = coin?.toUpperCase().replace(/-PERP$/, '') || ''
+  
+  // Use coin-specific max leverage as fallback
+  const coinMaxLeverage = getCoinMaxLeverage(normalized)
+  
+  return calculateMaintenanceLeverage(notional, marginTiers, coinMaxLeverage)
+}
+
+/**
+ * Get maintenance leverage for a specific coin with automatic network detection
+ * @param coin - Coin symbol
+ * @param notional - Notional position value
+ * @param marginTiers - Optional margin tiers
+ * @returns Maintenance leverage value
+ */
+export const getMaintenanceLeverageForCoinWithNetworkDetection = (
+  coin: string,
+  notional: number,
+  marginTiers?: Array<{ lowerBound: number | string; maxLeverage: number }>
+): number => {
+  const normalized = coin?.toUpperCase().replace(/-PERP$/, '') || ''
+  
+  // If no margin tiers provided, try to get them based on network detection
+  if (!marginTiers) {
+    marginTiers = getMarginTiersForNetwork(coin)
+  }
+  
+  // Use coin-specific max leverage as fallback
+  const coinMaxLeverage = getCoinMaxLeverage(normalized)
+  
+  return calculateMaintenanceLeverage(notional, marginTiers, coinMaxLeverage)
+}
+
+/**
+ * Get coin-specific max leverage for fallback calculations
+ * Updated to use testnet margin tiers as per Hyperliquid documentation
+ */
+const getCoinMaxLeverage = (coin: string): number => {
+  // Testnet margin tiers from https://hyperliquid.gitbook.io/hyperliquid-docs/trading/margin-tiers#testnet-margin-tiers
+  const testnetCoinMaxLeverages: Record<string, number> = {
+    // BTC - testnet only
+    BTC: 40,
+    // ETH - testnet only  
+    ETH: 25,
+    // DOGE, TIA, SUI, kSHIB, AAVE, TON - testnet only
+    DOGE: 10,
+    TIA: 10,
+    SUI: 10,
+    kSHIB: 10,
+    AAVE: 10,
+    TON: 10,
+    // LDO, ARB, MKR, ATOM, PAXG, TAO, ICP, AVAX, FARTCOIN - testnet only
+    LDO: 10,
+    ARB: 10,
+    MKR: 10,
+    ATOM: 10,
+    PAXG: 10,
+    TAO: 10,
+    ICP: 10,
+    AVAX: 10,
+    FARTCOIN: 10,
+  }
+  
+  return testnetCoinMaxLeverages[coin] ?? 10
+}
+
+/**
+ * Get mainnet margin tiers for a specific coin
+ * Based on https://hyperliquid.gitbook.io/hyperliquid-docs/trading/margin-tiers#mainnet-margin-tiers
+ */
+export const getMainnetMarginTiers = (coin: string): Array<{ lowerBound: number; maxLeverage: number }> => {
+  const normalized = coin?.toUpperCase().replace(/-PERP$/, '') || ''
+  
+  switch (normalized) {
+    case 'BTC':
+      return [
+        { lowerBound: 0, maxLeverage: 40 },
+        { lowerBound: 150_000_000, maxLeverage: 20 },
+      ]
+    
+    case 'ETH':
+      return [
+        { lowerBound: 0, maxLeverage: 25 },
+        { lowerBound: 100_000_000, maxLeverage: 15 },
+      ]
+    
+    case 'SOL':
+      return [
+        { lowerBound: 0, maxLeverage: 20 },
+        { lowerBound: 70_000_000, maxLeverage: 10 },
+      ]
+    
+    case 'XRP':
+      return [
+        { lowerBound: 0, maxLeverage: 20 },
+        { lowerBound: 40_000_000, maxLeverage: 10 },
+      ]
+    
+    // DOGE, kPEPE, SUI, WLD, TRUMP, LTC, ENA, POPCAT, WIF, AAVE, kBONK, LINK, CRV, AVAX, ADA, UNI, NEAR, TIA, APT, BCH, HYPE, FARTCOIN
+    case 'DOGE':
+    case 'kPEPE':
+    case 'SUI':
+    case 'WLD':
+    case 'TRUMP':
+    case 'LTC':
+    case 'ENA':
+    case 'POPCAT':
+    case 'WIF':
+    case 'AAVE':
+    case 'kBONK':
+    case 'LINK':
+    case 'CRV':
+    case 'AVAX':
+    case 'ADA':
+    case 'UNI':
+    case 'NEAR':
+    case 'TIA':
+    case 'APT':
+    case 'BCH':
+    case 'HYPE':
+    case 'FARTCOIN':
+      return [
+        { lowerBound: 0, maxLeverage: 10 },
+        { lowerBound: 20_000_000, maxLeverage: 5 },
+      ]
+    
+    // OP, ARB, LDO, TON, MKR, ONDO, JUP, INJ, kSHIB, SEI, TRX, BNB, DOT
+    case 'OP':
+    case 'ARB':
+    case 'LDO':
+    case 'TON':
+    case 'MKR':
+    case 'ONDO':
+    case 'JUP':
+    case 'INJ':
+    case 'kSHIB':
+    case 'SEI':
+    case 'TRX':
+    case 'BNB':
+    case 'DOT':
+      return [
+        { lowerBound: 0, maxLeverage: 10 },
+        { lowerBound: 3_000_000, maxLeverage: 5 },
+      ]
+    
+    default:
+      // Default fallback for unknown coins
+      return [
+        { lowerBound: 0, maxLeverage: 10 },
+        { lowerBound: 3_000_000, maxLeverage: 5 },
+      ]
+  }
+}
+
+/**
+ * Get margin tiers based on network type (mainnet or testnet)
+ * Automatically selects the appropriate tier configuration
+ * @param coin - Coin symbol
+ * @param isTestnet - Whether to use testnet tiers (default: true)
+ * @returns Array of margin tiers
+ */
+export const getMarginTiers = (coin: string, isTestnet: boolean = true): Array<{ lowerBound: number; maxLeverage: number }> => {
+  return isTestnet ? getTestnetMarginTiers(coin) : getMainnetMarginTiers(coin)
+}
+
+/**
+ * Get margin tiers with network detection from environment
+ * @param coin - Coin symbol
+ * @returns Array of margin tiers
+ */
+export const getMarginTiersForNetwork = (coin: string): Array<{ lowerBound: number; maxLeverage: number }> => {
+  // Check if we're in a browser environment and can access window
+  if (typeof window !== 'undefined') {
+    // Try to get network status from the app state
+    try {
+      // @ts-ignore - window may have app-specific properties
+      const appNetwork = (window as any).__HYPERLIQUID_NETWORK
+      if (appNetwork === 'mainnet' || appNetwork === 'testnet') {
+        return getMarginTiers(coin, appNetwork === 'testnet')
+      }
+    } catch (error) {
+      console.warn('Could not detect network from window, defaulting to testnet')
+    }
+  }
+  
+  // Default to testnet for safety
+  return getTestnetMarginTiers(coin)
+}
+
+/**
+ * Get testnet margin tiers for a specific coin
+ * Based on https://hyperliquid.gitbook.io/hyperliquid-docs/trading/margin-tiers#testnet-margin-tiers
+ */
+export const getTestnetMarginTiers = (coin: string): Array<{ lowerBound: number; maxLeverage: number }> => {
+  const normalized = coin?.toUpperCase().replace(/-PERP$/, '') || ''
+  
+  switch (normalized) {
+    case 'BTC':
+      return [
+        { lowerBound: 0, maxLeverage: 40 },
+        { lowerBound: 10_000, maxLeverage: 25 },
+        { lowerBound: 50_000, maxLeverage: 10 },
+        { lowerBound: 100_000, maxLeverage: 5 },
+        { lowerBound: 300_000, maxLeverage: 3 },
+      ]
+    
+    case 'ETH':
+      return [
+        { lowerBound: 0, maxLeverage: 25 },
+        { lowerBound: 20_000, maxLeverage: 10 },
+        { lowerBound: 50_000, maxLeverage: 5 },
+        { lowerBound: 200_000, maxLeverage: 3 },
+      ]
+    
+    case 'DOGE':
+    case 'TIA':
+    case 'SUI':
+    case 'kSHIB':
+    case 'AAVE':
+    case 'TON':
+      return [
+        { lowerBound: 0, maxLeverage: 10 },
+        { lowerBound: 20_000, maxLeverage: 5 },
+        { lowerBound: 100_000, maxLeverage: 3 },
+      ]
+    
+    case 'LDO':
+    case 'ARB':
+    case 'MKR':
+    case 'ATOM':
+    case 'PAXG':
+    case 'TAO':
+    case 'ICP':
+    case 'AVAX':
+    case 'FARTCOIN':
+      return [
+        { lowerBound: 0, maxLeverage: 10 },
+        { lowerBound: 10_000, maxLeverage: 5 },
+      ]
+    
+    default:
+      // Default fallback for unknown coins
+      return [
+        { lowerBound: 0, maxLeverage: 10 },
+        { lowerBound: 10_000, maxLeverage: 5 },
+      ]
+  }
+}
+
+/**
+ * Calculate liquidation price with maintenance leverage details
+ * This function provides additional information about maintenance leverage used
+ */
+export const calculateLiquidationWithMaintenanceLeverage = ({
+  entryPrice,
+  leverage,
+  side,
+  coin = 'BTC',
+  marginMode = 'isolated',
+  accountValue = 0,
+  isolatedMargin = 0,
+  positionSize,
+  walletBalance = 0,
+  transferRequirement,
+  marginTiers,
+  maxLeverage,
+}: InputLiquidationParams): LiquidationDetails & { maintenanceLeverage: number } => {
+  // Calculate basic liquidation details
+  const liquidationDetails = calculateLiquidationWithDetailsFromInputs({
+    entryPrice,
+    leverage,
+    side,
+    coin,
+    marginMode,
+    accountValue,
+    isolatedMargin,
+    positionSize,
+    walletBalance,
+    transferRequirement,
+    marginTiers,
+    maxLeverage,
+  })
+
+  // Calculate maintenance leverage for the position
+  const notionalAtEntry = Math.abs(positionSize ?? 0) * entryPrice
+  const maintenanceLeverage = getMaintenanceLeverageForCoin(coin, notionalAtEntry, marginTiers)
+
+  return {
+    ...liquidationDetails,
+    maintenanceLeverage,
+  }
+}
+
+/**
+ * Calculate liquidation price with automatic network detection and maintenance leverage
+ * This function automatically detects the network and uses appropriate margin tiers
+ */
+export const calculateLiquidationWithNetworkDetection = ({
+  entryPrice,
+  leverage,
+  side,
+  coin = 'BTC',
+  marginMode = 'isolated',
+  accountValue = 0,
+  isolatedMargin = 0,
+  positionSize,
+  walletBalance = 0,
+  transferRequirement,
+  marginTiers,
+  maxLeverage,
+  isTestnet = true, // Default to testnet for safety
+}: InputLiquidationParams & { isTestnet?: boolean }): LiquidationDetails & { maintenanceLeverage: number; networkType: string } => {
+  // Use provided margin tiers or get them based on network
+  const effectiveMarginTiers = marginTiers || getMarginTiers(coin, isTestnet)
+  
+  // Calculate basic liquidation details
+  const liquidationDetails = calculateLiquidationWithDetailsFromInputs({
+    entryPrice,
+    leverage,
+    side,
+    coin,
+    marginMode,
+    accountValue,
+    isolatedMargin,
+    positionSize,
+    walletBalance,
+    transferRequirement,
+    marginTiers: effectiveMarginTiers,
+    maxLeverage,
+  })
+
+  // Calculate maintenance leverage for the position
+  const notionalAtEntry = Math.abs(positionSize ?? 0) * entryPrice
+  const maintenanceLeverage = getMaintenanceLeverageForCoin(coin, notionalAtEntry, effectiveMarginTiers, isTestnet)
+
+  return {
+    ...liquidationDetails,
+    maintenanceLeverage,
+    networkType: isTestnet ? 'testnet' : 'mainnet',
+  }
 }
 
 export const calculateMaintenanceMarginRequired = (
@@ -570,22 +980,3 @@ export const calculateLiquidationWithDetailsFromInputs = ({
 
   return { price: liquidationPrice, rate: lastRate, deduction: lastDeduction, equityUsed: equity }
 }
-  if (liqDebugEnabled()) {
-    console.log('[LIQ DEBUG][DETAILS INPUTS]', {
-      entryPrice,
-      leverage,
-      side,
-      coin,
-      marginMode,
-      positionSize: effectivePositionSize,
-      initialMarginRequired,
-      providedAccountValue,
-      equityOverride,
-      resolvedAccountValue,
-      resolvedIsolatedMargin,
-      walletBalance,
-      transferRequirement: transferRequirementValue,
-      marginTiers: normalizedMarginTiers,
-      fallbackRate,
-    })
-  }

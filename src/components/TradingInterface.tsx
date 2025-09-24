@@ -9,7 +9,7 @@ import { TradingConfigHelper } from '../config/tradingConfig'
 import { hyperliquidService } from '../services/hyperliquidService'
 import { validateHyperliquidPrice, validateHyperliquidSizeSync, formatHyperliquidPriceSync, formatHyperliquidSizeSync, getHyperliquidSizeValidationError, validateHyperliquidPriceSync, HyperliquidPrecision } from '../utils/hyperliquidPrecision'
 import { COIN_PRECISION_CONFIG } from '../config/hyperliquidPrecisionConfig'
-import { calculateIsolatedMarginRequirement, calculateLiquidationPriceFromInputs, calculateLiquidationWithDetailsFromInputs } from '../utils/liquidationPrice'
+import { calculateIsolatedMarginRequirement, calculateLiquidationPriceFromInputs, calculateLiquidationWithDetailsFromInputs, getMarginTiersForNetwork } from '../utils/liquidationPrice'
 import { leverageService, LeverageInfo } from '../services/leverageService'
 
 const applyMaxDigitLimit = (value: string, maxDigits = 12) => {
@@ -1101,18 +1101,8 @@ const sanitizePriceInput = (
               }
             })
 
-            // Filter coins that exist in COIN_PRECISION_CONFIG
-            const coinsInConfig = normalizedCoins.filter(coin => {
-              const coinSymbol = coin.symbol.toUpperCase()
-              const hasConfig = COIN_PRECISION_CONFIG[coinSymbol] !== undefined
-              if (!hasConfig) {
-                console.log(`⚠️ Skipping ${coinSymbol} - not in COIN_PRECISION_CONFIG`)
-              }
-              return hasConfig
-            })
-
             // Sort by 24h notional volume (desc) and keep top 6
-            const sorted = [...coinsInConfig].sort((a, b) => {
+            const sorted = [...normalizedCoins].sort((a, b) => {
               const aVol = (typeof a.dayNotionalVolume === 'number' ? a.dayNotionalVolume : 0)
               const bVol = (typeof b.dayNotionalVolume === 'number' ? b.dayNotionalVolume : 0)
               if (bVol !== aVol) return bVol - aVol
@@ -1123,10 +1113,10 @@ const sanitizePriceInput = (
             })
             const top10 = sorted.slice(0, 10)
 
-            // HyperliquidPrecision.primeCacheFromCoins(top10)
+            HyperliquidPrecision.primeCacheFromCoins(top10)
             setTopCoins(top10)
-            console.log('📊 Top 10 coins from API (sorted by volume, filtered by COIN_PRECISION_CONFIG):', top6)
-            console.log(`📈 Filtered ${normalizedCoins.length} coins down to ${coinsInConfig.length} with precision config, showing top 6`)
+            console.log('📊 Top 10 coins from API (sorted by volume):', top10)
+            console.log(`📈 Processed ${normalizedCoins.length} coins, showing top 6`)
           } else {
             console.error('❌ Top coins response missing coins array')
           }
@@ -1143,10 +1133,15 @@ const sanitizePriceInput = (
             })
             .map(coin => {
               const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin.symbol)
+              // Get dynamic max leverage using network detection
+              const coinName = coin.symbol.replace('-PERP', '')
+              const marginTiers = getMarginTiersForNetwork(coinName)
+              const dynamicMaxLeverage = marginTiers.length > 0 ? marginTiers[0].maxLeverage : 10
+              
               return {
                 symbol: coin.symbol,
                 name: coin.name,
-                maxLeverage: 10,
+                maxLeverage: dynamicMaxLeverage,
                 szDecimals: assetInfo.szDecimals,
                 pxDecimals: assetInfo.pxDecimals
               }
@@ -1168,10 +1163,15 @@ const sanitizePriceInput = (
           })
           .map(coin => {
             const assetInfo = HyperliquidPrecision.getDefaultAssetInfo(coin.symbol)
+            // Get dynamic max leverage using network detection
+            const coinName = coin.symbol.replace('-PERP', '')
+            const marginTiers = getMarginTiersForNetwork(coinName)
+            const dynamicMaxLeverage = marginTiers.length > 0 ? marginTiers[0].maxLeverage : 10
+            
             return {
               symbol: coin.symbol,
               name: coin.name,
-              maxLeverage: 10,
+              maxLeverage: dynamicMaxLeverage,
               szDecimals: assetInfo.szDecimals,
               pxDecimals: assetInfo.pxDecimals
             }
